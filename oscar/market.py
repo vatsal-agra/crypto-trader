@@ -1,22 +1,44 @@
-"""Market data service — fetches OHLCV via direct Binance REST + indicators."""
+"""Market data service — multi-exchange (ccxt) OHLCV, prices, indicators and
+**dynamic universe discovery**.
+
+The old version hit Binance.com directly with a hardcoded 6-coin watchlist.
+This version talks to whatever exchange is reachable (auto-failover across
+binance → kucoin → gate → okx → kraken → coinbase) and can discover the *entire*
+tradeable universe (hundreds–thousands of pairs), so the AI brain — not the
+code — chooses what to trade.
+
+Method signatures used elsewhere (`get_ohlcv`, `get_price`, `get_market_summary`,
+`scan_symbols`, `calculate_indicators`, `determine_bias`) are preserved.
+"""
+
+from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 from typing import Optional
 
-import httpx
 import pandas as pd
+
+import ccxt.async_support as ccxt
 
 logger = logging.getLogger(__name__)
 
 TIMEFRAME_MAP: dict[str, str] = {
-    "1W": "1w",
-    "1D": "1d",
-    "4H": "4h",
-    "1H": "1h",
-    "15M": "15m",
-    "15m": "15m",
+    "1W": "1w", "1D": "1d", "4H": "4h", "1H": "1h", "15M": "15m", "15m": "15m",
 }
+
+# Tried in order when EXCHANGE_ID=auto. First one whose markets load wins.
+_AUTO_EXCHANGES = ["binance", "binanceus", "kucoin", "gateio", "okx", "kraken", "coinbase"]
+
+_SNAPSHOT_CONCURRENCY = 8
+
+# How long a full tickers snapshot is reused before refetching. Keeps the
+# dashboard snappy: one exchange round-trip serves every price lookup (all
+# agents, all positions, every endpoint) within the window instead of one
+# round-trip per position per request.
+_PRICE_CACHE_TTL = float(os.getenv("PRICE_CACHE_TTL", "8"))
 
 
 def parse_tv_symbol(tv_symbol: str) -> Optional[tuple[str, str]]:
@@ -31,7 +53,7 @@ def parse_tv_symbol(tv_symbol: str) -> Optional[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Pure-Python indicator maths (no extra deps beyond pandas/numpy)
+# Pure-Python indicator maths
 # ---------------------------------------------------------------------------
 
 def _ema(series: pd.Series, period: int) -> pd.Series:
@@ -95,62 +117,222 @@ def detect_structure(df: pd.DataFrame, window: int = 5) -> str:
     return "No clear structure"
 
 
+def _normalize_symbol(x: str, quote: str = "USDT") -> str:
+    """Accept 'BTC', 'BTCUSDT', 'BTC/USDT' or 'BINANCE:BTCUSDT' -> 'BTC/USDT'."""
+    x = x.strip().upper()
+    if "/" in x:
+        return x
+    if ":" in x:
+        x = x.split(":", 1)[1]
+    if x.endswith(quote):
+        base = x[: -len(quote)]
+        return f"{base}/{quote}"
+    return f"{x}/{quote}"
+
+
 # ---------------------------------------------------------------------------
 # Main service
 # ---------------------------------------------------------------------------
 
-_BINANCE_HOSTS = [
-    "https://api.binance.com",
-    "https://api1.binance.com",
-    "https://api2.binance.com",
-    "https://api3.binance.com",
-]
-_HTTP_TIMEOUT = httpx.Timeout(15.0)
-
 
 class MarketDataService:
-    def __init__(self) -> None:
-        pass
+    def __init__(self, exchange_id: str = "auto", quote: str = "USDT") -> None:
+        self._exchange_id = exchange_id
+        self._quote = quote
+        self._ex: Optional[ccxt.Exchange] = None
+        self._ex_lock = asyncio.Lock()
+        self._sem = asyncio.Semaphore(_SNAPSHOT_CONCURRENCY)
+        self.active_exchange: Optional[str] = None
+        # Shared TTL cache of the full tickers snapshot (ccxt_sym -> last price).
+        self._tickers_cache: dict[str, float] = {}
+        self._tickers_ts: float = 0.0
+        self._tickers_lock = asyncio.Lock()
+
+    # ------------------------------------------------------------------
+    # Exchange lifecycle
+    # ------------------------------------------------------------------
+
+    async def _build(self, name: str) -> Optional[ccxt.Exchange]:
+        try:
+            ex = getattr(ccxt, name)({"enableRateLimit": True, "timeout": 20000})
+            await ex.load_markets()
+            return ex
+        except Exception as exc:
+            logger.info("Exchange %s unavailable: %s", name, repr(exc)[:120])
+            try:
+                await ex.close()  # type: ignore[has-type]
+            except Exception:
+                pass
+            return None
+
+    async def _exchange(self) -> ccxt.Exchange:
+        if self._ex is not None:
+            return self._ex
+        async with self._ex_lock:
+            if self._ex is not None:
+                return self._ex
+            candidates = (
+                _AUTO_EXCHANGES if self._exchange_id == "auto" else [self._exchange_id]
+            )
+            for name in candidates:
+                ex = await self._build(name)
+                if ex is not None:
+                    self._ex = ex
+                    self.active_exchange = name
+                    logger.info("Market data exchange: %s (%d markets)", name, len(ex.markets))
+                    return ex
+            raise RuntimeError(
+                f"No reachable exchange among {candidates}. Set EXCHANGE_ID to a "
+                f"specific reachable exchange."
+            )
 
     async def close(self) -> None:
-        pass
+        if self._ex is not None:
+            try:
+                await self._ex.close()
+            except Exception:
+                pass
+            self._ex = None
+
+    # ------------------------------------------------------------------
+    # Universe discovery — the heart of "trades on many cryptos as it wishes"
+    # ------------------------------------------------------------------
+
+    async def discover_universe(self, limit: int = 60) -> list[dict]:
+        """Return the top `limit` tradeable pairs ranked by 24h quote volume.
+
+        No hardcoded coin list — this reflects whatever the exchange lists.
+        """
+        ex = await self._exchange()
+        try:
+            tickers = await ex.fetch_tickers()
+        except Exception as exc:
+            logger.warning("fetch_tickers failed: %s — falling back to markets list", repr(exc)[:120])
+            tickers = {}
+
+        rows: list[dict] = []
+        for sym, m in ex.markets.items():
+            if not m.get("spot", True):
+                continue
+            if m.get("quote") != self._quote:
+                continue
+            if not m.get("active", True):
+                continue
+            t = tickers.get(sym, {})
+            qv = t.get("quoteVolume")
+            if qv is None:
+                bv = t.get("baseVolume") or 0
+                last = t.get("last") or 0
+                qv = (bv or 0) * (last or 0)
+            rows.append({
+                "symbol": sym,
+                "base": m.get("base", sym.split("/")[0]),
+                "last": t.get("last"),
+                "quote_volume": float(qv or 0.0),
+                "pct_change": t.get("percentage"),
+            })
+
+        rows.sort(key=lambda r: r["quote_volume"], reverse=True)
+        return rows[: max(1, limit)]
+
+    # ------------------------------------------------------------------
+    # OHLCV + prices
+    # ------------------------------------------------------------------
 
     async def get_ohlcv(
         self, symbol: str, timeframe: str = "1d", limit: int = 250
     ) -> Optional[pd.DataFrame]:
-        """Fetch OHLCV candles from Binance REST API — no market-loading needed."""
-        base, quote = symbol.split("/")
-        bsym = f"{base}{quote}"  # BTCUSDT
-        interval = TIMEFRAME_MAP.get(timeframe, timeframe.lower())
-        params = {"symbol": bsym, "interval": interval, "limit": limit}
+        ccxt_sym = _normalize_symbol(symbol, self._quote)
+        tf = TIMEFRAME_MAP.get(timeframe, timeframe.lower())
+        ex = await self._exchange()
+        try:
+            async with self._sem:
+                raw = await ex.fetch_ohlcv(ccxt_sym, tf, limit=limit)
+        except Exception as exc:
+            logger.debug("OHLCV %s %s failed: %s", ccxt_sym, tf, repr(exc)[:100])
+            return None
+        if not raw:
+            return None
+        df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close", "volume"])
+        df["ts"] = pd.to_datetime(df["ts"], unit="ms")
+        df.set_index("ts", inplace=True)
+        return df[["open", "high", "low", "close", "volume"]].astype(float)
 
-        for host in _BINANCE_HOSTS:
+    async def _all_tickers(self, force: bool = False) -> dict[str, float]:
+        """Full tickers snapshot (ccxt_sym -> last price), cached for a few seconds.
+
+        A single ``fetch_tickers()`` round-trip backs every price lookup within
+        the TTL window, so the dashboard's combined poll (portfolio + arena +
+        positions, many overlapping symbols) no longer fans out into dozens of
+        sequential exchange calls.
+        """
+        now = time.monotonic()
+        if not force and self._tickers_cache and now - self._tickers_ts < _PRICE_CACHE_TTL:
+            return self._tickers_cache
+        async with self._tickers_lock:
+            now = time.monotonic()
+            if not force and self._tickers_cache and now - self._tickers_ts < _PRICE_CACHE_TTL:
+                return self._tickers_cache
+            ex = await self._exchange()
             try:
-                async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-                    r = await client.get(f"{host}/api/v3/klines", params=params)
-                    r.raise_for_status()
-                    raw = r.json()
-                if not raw:
-                    return None
-                df = pd.DataFrame(
-                    raw,
-                    columns=[
-                        "ts", "open", "high", "low", "close", "volume",
-                        "ct", "qvol", "trades", "tbbv", "tbqv", "ignore",
-                    ],
-                )
-                df["ts"] = pd.to_datetime(df["ts"], unit="ms")
-                df.set_index("ts", inplace=True)
-                return df[["open", "high", "low", "close", "volume"]].astype(float)
+                async with self._sem:
+                    tickers = await ex.fetch_tickers()
+                cache: dict[str, float] = {}
+                for cs, t in tickers.items():
+                    price = (t or {}).get("last") or (t or {}).get("close")
+                    if price is not None:
+                        cache[cs] = float(price)
+                if cache:
+                    self._tickers_cache = cache
+                    self._tickers_ts = now
             except Exception as exc:
-                logger.debug("OHLCV %s failed on %s: %s", symbol, host, exc)
-                continue
+                logger.warning("fetch_tickers (cache) failed: %s", repr(exc)[:120])
+        return self._tickers_cache
 
-        logger.warning("OHLCV fetch failed for %s/%s after all hosts", symbol, timeframe)
-        return None
+    async def get_price(self, symbol: str) -> Optional[float]:
+        ccxt_sym = _normalize_symbol(symbol, self._quote)
+        cache = await self._all_tickers()
+        if ccxt_sym in cache:
+            return cache[ccxt_sym]
+        # Not in the snapshot (thin or newly listed pair) — one direct lookup.
+        ex = await self._exchange()
+        try:
+            async with self._sem:
+                t = await ex.fetch_ticker(ccxt_sym)
+            price = t.get("last") or t.get("close")
+            return float(price) if price is not None else None
+        except Exception as exc:
+            logger.debug("Price fetch failed %s: %s", ccxt_sym, repr(exc)[:100])
+            return None
+
+    async def get_prices(self, symbols: list[str]) -> dict[str, float]:
+        """Batch price lookup; keys are bare bases (e.g. 'BTC')."""
+        if not symbols:
+            return {}
+        ccxt_syms = [_normalize_symbol(s, self._quote) for s in symbols]
+        cache = await self._all_tickers()
+        out: dict[str, float] = {}
+        missing: list[str] = []
+        for cs in ccxt_syms:
+            if cs in cache:
+                out[cs.split("/")[0]] = cache[cs]
+            else:
+                missing.append(cs)
+
+        if missing:
+            async def _one(cs: str) -> None:
+                p = await self.get_price(cs)
+                if p is not None:
+                    out[cs.split("/")[0]] = p
+
+            await asyncio.gather(*[_one(cs) for cs in missing])
+        return out
+
+    # ------------------------------------------------------------------
+    # Indicators + summaries
+    # ------------------------------------------------------------------
 
     def calculate_indicators(self, df: pd.DataFrame) -> dict:
-        """Compute all indicators: RSI, MACD, 50/200 EMA, volume MA."""
         closes = df["close"]
         volumes = df["volume"]
 
@@ -165,7 +347,7 @@ class MarketDataService:
         e50 = float(ema50.iloc[-1])
         e200 = float(ema200.iloc[-1])
         vol = float(volumes.iloc[-1])
-        vol_avg = float(vol_ma20.iloc[-1])
+        vol_avg = float(vol_ma20.iloc[-1]) if not pd.isna(vol_ma20.iloc[-1]) else vol
 
         return {
             "price": price,
@@ -174,7 +356,7 @@ class MarketDataService:
             "ema200": e200,
             "above_ema50": price > e50,
             "above_ema200": price > e200,
-            "ema50_pct": ((price - e50) / e50) * 100,
+            "ema50_pct": ((price - e50) / e50) * 100 if e50 else 0.0,
             "macd": float(macd_line.iloc[-1]),
             "macd_signal": float(signal_line.iloc[-1]),
             "macd_hist": float(histogram.iloc[-1]),
@@ -184,7 +366,10 @@ class MarketDataService:
         }
 
     def determine_bias(self, daily: dict, h4_structure: str) -> str:
-        """Apply the swing-trading bias rules from config/rules.json."""
+        """A neutral, descriptive bias label (NOT a trade rule).
+
+        This is only context handed to the AI — the AI is free to ignore it.
+        """
         rsi = daily.get("rsi", 50.0)
         above_ema50 = daily.get("above_ema50", False)
         bullish_structure = "HH/HL" in h4_structure
@@ -196,36 +381,30 @@ class MarketDataService:
             return "BEARISH"
         return "NEUTRAL"
 
-    async def get_market_summary(
-        self, tv_symbol: str, rules: dict
-    ) -> Optional[dict]:
-        """Return a full analysis dict for a single TradingView symbol."""
-        parsed = parse_tv_symbol(tv_symbol)
-        if not parsed:
-            logger.debug("Skipping non-exchange symbol: %s", tv_symbol)
-            return None
-        base, ccxt_symbol = parsed
+    async def get_market_summary(self, symbol: str, rules: dict | None = None) -> Optional[dict]:
+        """Full analysis dict for one symbol. Accepts TV, ccxt or bare formats."""
+        ccxt_sym = _normalize_symbol(symbol, self._quote)
+        base = ccxt_sym.split("/")[0]
 
         daily_df, h4_df = await asyncio.gather(
-            self.get_ohlcv(ccxt_symbol, "1d", 250),
-            self.get_ohlcv(ccxt_symbol, "4h", 100),
+            self.get_ohlcv(ccxt_sym, "1d", 250),
+            self.get_ohlcv(ccxt_sym, "4h", 100),
         )
 
         if daily_df is None or len(daily_df) < 50:
-            return {"symbol": tv_symbol, "error": "Insufficient data"}
+            return {"symbol": symbol, "error": "Insufficient data"}
 
         daily = self.calculate_indicators(daily_df)
         h4 = self.calculate_indicators(h4_df) if h4_df is not None and len(h4_df) >= 50 else daily
         h4_structure = (
-            detect_structure(h4_df)
-            if h4_df is not None and len(h4_df) > 20
-            else "Unknown"
+            detect_structure(h4_df) if h4_df is not None and len(h4_df) > 20 else "Unknown"
         )
         bias = self.determine_bias(daily, h4_structure)
 
         return {
-            "symbol": tv_symbol,
-            "ccxt_symbol": ccxt_symbol,
+            "symbol": f"EXCHANGE:{base}{self._quote}",
+            "base": base,
+            "ccxt_symbol": ccxt_sym,
             "price": daily["price"],
             "bias": bias,
             "daily": daily,
@@ -233,32 +412,7 @@ class MarketDataService:
             "h4_structure": h4_structure,
         }
 
-    async def get_price(self, ccxt_symbol: str) -> Optional[float]:
-        """Fetch the current price for a symbol via Binance REST API."""
-        base, quote = ccxt_symbol.split("/")
-        bsym = f"{base}{quote}"
-
-        for host in _BINANCE_HOSTS:
-            try:
-                async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-                    r = await client.get(
-                        f"{host}/api/v3/ticker/price", params={"symbol": bsym}
-                    )
-                    r.raise_for_status()
-                    return float(r.json()["price"])
-            except Exception:
-                continue
-
-        logger.warning("Price fetch failed for %s", ccxt_symbol)
-        return None
-
-    async def scan_symbols(self, symbols: list[str], rules: dict) -> list[dict]:
-        """Scan a list of TradingView symbols concurrently."""
-        tradeable = [s for s in symbols if parse_tv_symbol(s) is not None]
-        tasks = [self.get_market_summary(s, rules) for s in tradeable]
+    async def scan_symbols(self, symbols: list[str], rules: dict | None = None) -> list[dict]:
+        tasks = [self.get_market_summary(s, rules) for s in symbols]
         raw = await asyncio.gather(*tasks, return_exceptions=True)
-        return [
-            r
-            for r in raw
-            if isinstance(r, dict) and "error" not in r
-        ]
+        return [r for r in raw if isinstance(r, dict) and "error" not in r]

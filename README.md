@@ -1,155 +1,147 @@
-# Oscar — AI Crypto Trading Assistant
+# Autonomous Arena — AI Crypto Trader
 
-Oscar is an AI-powered Telegram bot for swing-trading crypto. Send text or voice messages and get actionable trading insights — powered by Google Gemini AI and live Binance data.
+A fully **LLM-driven** autonomous crypto trading system. Multiple independent AI
+agents (powered by Google Gemini) each run their own paper-trading account,
+**decide everything themselves** — which coins to trade, long or short, position
+size, stops, targets, and their own evolving strategy — and compete in a live
+arena. **Nothing about the trading is hardcoded.** The code only discovers market
+data, executes the AI's decisions on paper, and enforces a thin safety layer.
 
----
-
-## What Oscar Does
-
-| Feature | Detail |
-|---------|--------|
-| 🔍 Watchlist scan | Scans BTC, ETH, SOL, LINK, AVAX, SUI concurrently |
-| 📊 Technical analysis | RSI(14), MACD(12/26/9), 50/200 EMA, 4H market structure |
-| 🎤 Voice messages | Whisper transcription → same AI response |
-| 🧠 Conversation memory | Remembers context within a session per user |
-| ⚡ Live data | Real-time OHLCV from Binance via CCXT |
+> Trading mode is **paper only**. No live-exchange order execution is implemented.
 
 ---
 
-## Project Structure
+## What makes it "autonomous"
+
+| Old (rule-driven) | New (AI-driven) |
+|---|---|
+| Fixed 6-coin watchlist | **Dynamic universe** — top N coins by 24h volume, discovered live |
+| Hardcoded RSI/EMA entry rules | **AI authors & evolves its own strategy** every cycle |
+| Code-coded 1% risk sizing | **AI sizes freely** (within a safety cap) |
+| One strategy | **N independent agents** competing, each with its own persona & memo |
+| Binance.com only | **Multi-exchange** via ccxt with auto-failover |
+
+Each cycle every agent is handed its account state, the live universe, deep
+technicals, its open positions, recent trades, and **its own last strategy memo**.
+It returns a JSON decision: which positions to open/close, sizes, stops, targets,
+a rewritten strategy memo, and a watchlist for next cycle. The indicators shown
+to the AI are *context only* — it may use, combine, or ignore them.
+
+---
+
+## Architecture
 
 ```
-crypto trader attempt 2/
-├── main.py                  # Entry point — python main.py
-├── requirements.txt
-├── .env.example             # Copy to .env and fill in keys
-├── config/
-│   └── rules.json           # Swing-trading rules (watchlist, bias, risk)
+├── main.py                  # Entry point — python main.py (web) / --bot (legacy Telegram)
+├── server.py                # FastAPI server + dashboard REST API (the autonomous arena)
+├── engine/
+│   ├── config.py            # Runtime knobs + safe defaults + Gemini key collection (NO strategy params)
+│   ├── brain.py             # Gemini decision engine: multi-key rotation, self-evolving memo, JSON parse, no-AI fallback
+│   ├── agent.py             # An autonomous agent = brain + paper account + evolving memo + safety
+│   ├── safety.py            # The ONLY code-enforced rules: paper mode, kill switch, drawdown breaker, caps
+│   └── trading_loop.py      # AutonomousArena orchestrator (universe discovery, snapshot, dispatch, exit monitor)
 ├── oscar/
-│   ├── __init__.py
-│   ├── bot.py               # Telegram bot — all commands and handlers
-│   ├── analyzer.py          # Gemini API integration (Oscar persona)
-│   ├── market.py            # CCXT data fetching + indicator engine
-│   └── voice.py             # OpenAI Whisper transcription
-└── scripts/
-    └── setup_mcp.ps1        # Windows: sets up TradingView MCP for Claude Code
+│   ├── market.py            # ccxt multi-exchange OHLCV + indicators + dynamic universe discovery
+│   ├── paper_trader.py      # Paper account mechanics (free-form entries)
+│   ├── analyzer.py          # Legacy Gemini analyzer (Telegram)
+│   ├── bot.py               # Legacy Telegram bot
+│   └── voice.py             # OpenAI Whisper transcription (legacy)
+└── web/index.html           # Live dashboard (React, single file)
 ```
 
 ---
 
 ## Quick Start
 
-### 1. Prerequisites
-
-- Python 3.11+
-- A Telegram Bot Token → create one via [@BotFather](https://t.me/BotFather)
-- A [Google Gemini API key](https://aistudio.google.com/app/apikey) — free tier available
-- *(Optional)* An [OpenAI API key](https://platform.openai.com/) for voice transcription
-
-### 2. Install
-
-```powershell
-cd "crypto trader attempt 2"
+### 1. Install
+```bash
 pip install -r requirements.txt
 ```
 
-### 3. Configure
-
-```powershell
-copy .env.example .env
-# Open .env and fill in your API keys
-```
-
+### 2. Configure
+Copy `.env.example` to `.env` and add at least one Gemini API key:
 ```env
-TELEGRAM_BOT_TOKEN=your_token_here
 GEMINI_API_KEY=your_key_here
-OPENAI_API_KEY=your_key_here        # optional, for voice
-GEMINI_MODEL=gemini-1.5-flash       # or gemini-1.5-pro for more power
+GEMINI_API_KEY_2=optional_second_key      # round-robin rotation for higher throughput
+GEMINI_MODEL=gemini-2.5-flash
 ```
+Get free keys at <https://aistudio.google.com/app/apikey>.
 
-### 4. Run Oscar
+> **Model note:** some free-tier keys have **quota 0** on `gemini-2.0-flash`, and
+> the `1.5` models are retired. `gemini-2.5-flash` is the verified default.
 
-```powershell
+### 3. Run
+```bash
 python main.py
 ```
+Open <http://localhost:8000> for the dashboard. The arena starts immediately and
+runs its first decision cycle within ~1 minute.
 
-Open your Telegram bot and type `/start`.
-
----
-
-## Telegram Commands
-
-| Command | Description |
-|---------|-------------|
-| `/start` | Welcome message and capabilities |
-| `/scan` | Scan full watchlist — majors + alts |
-| `/analyse BTC` | Full technical breakdown of any coin |
-| `/price ETH` | Quick price, bias, RSI snapshot |
-| `/clear` | Reset your conversation history |
-| `/help` | List all commands |
-
-You can also just **talk naturally** — ask anything in text or send a voice message.
-
-**Example voice prompts:**
-> *"Oscar, anything interesting in the majors right now?"*
-> *"Oscar, give me a quick read on BTC and ETH."*
-> *"Oscar, what setups are triggering on my watchlist today?"*
+If no Gemini key is set, the system still runs in **degraded mode** (agents hold
+positions passively and the exit monitor still honors stops/targets).
 
 ---
 
-## Trading Rules
+## Configuration (all via env vars — all optional)
 
-Oscar's analysis follows `config/rules.json`:
+**Scale**
+| Var | Default | Meaning |
+|---|---|---|
+| `NUM_AGENTS` | 6 | independent competing agents |
+| `UNIVERSE_SIZE` | 60 | coins discovered per cycle (by 24h volume) |
+| `DEEP_ANALYSIS_BUDGET` | 25 | coins with full technicals fetched per cycle |
+| `CYCLE_MINUTES` | 15 | minutes between decision cycles |
+| `STARTING_BALANCE` | 10000 | paper $ per agent |
 
-- **Bias (Bullish):** Price above 50D EMA + RSI 45–70 + 4H HH/HL structure
-- **Bias (Bearish):** Price below 50D EMA + RSI < 45 + 4H LH/LL structure
-- **Bias (Neutral):** Anything else
-- **Min R/R:** 2:1 — Oscar won't suggest a trade below this threshold
-- **Max risk:** 1% of portfolio per trade
-- **Avoid:** Major CPI, FOMC, weekend thin liquidity
+**Exchange / data**
+| Var | Default | Meaning |
+|---|---|---|
+| `EXCHANGE_ID` | `auto` | `auto` failover, or a specific ccxt id (e.g. `binance`, `kucoin`) |
+| `QUOTE_ASSET` | `USDT` | quote currency for the universe |
 
-Edit `config/rules.json` to change any of these at any time.
+Auto-failover order: `binance → binanceus → kucoin → gateio → okx → kraken → coinbase`.
+
+**Safety (the only code-enforced rules)**
+| Var | Default | Meaning |
+|---|---|---|
+| `TRADING_MODE` | `paper` | only paper is implemented |
+| `MAX_OPEN_POSITIONS` | 50 | per agent |
+| `MAX_DAILY_DRAWDOWN_PCT` | 25 | halt new entries for the day if breached |
+| `MAX_ALLOC_PCT_PER_TRADE` | 40 | clamp any single position size |
+| `KILL_SWITCH` | `false` | set true (or create a `STOP` file) to halt all new entries |
+
+**Gemini keys** — any of: `GEMINI_API_KEY`, `GEMINI_API_KEY_2..N`, or a
+comma-separated `GEMINI_API_KEYS` bundle. All are pooled and rotated round-robin.
 
 ---
 
-## TradingView MCP Setup (for Claude Code)
+## Dashboard
 
-If you also want to use Claude Code with TradingView Desktop (live chart analysis, drawing tools, Pine Script injection):
+The single-file React dashboard (`web/index.html`) shows:
+- Live header (exchange, agents, keys, universe size, cycle, run #)
+- Aggregate equity curve + portfolio KPIs
+- **Live universe heatmap** (top coins colored by 24h change)
+- **Agent cards** — equity sparkline, win rate, and each agent's evolving memo
+- **Agent detail** — full self-authored strategy memo, watchlist, open positions, closed trades, and a per-trade activity log with the AI's reasoning
+- Candle charts for any coin, and a safety panel
 
-```powershell
-.\scripts\setup_mcp.ps1
+---
+
+## Safety model
+
+The AI has complete freedom over *what* to trade. The code never tells it a
+strategy. The only hard limits the code enforces are in `engine/safety.py`:
+paper-mode (live execution refused), kill switch / `STOP` file, daily drawdown
+circuit breaker, max open positions, and a per-trade allocation cap. Everything
+else — coin selection, direction, sizing, stops, targets, entry/exit timing — is
+the AI's own decision.
+
+---
+
+## Legacy Telegram bot
+
+The original Telegram assistant is still available:
+```bash
+python main.py --bot
 ```
-
-This will:
-1. Clone the `tradingview-mcp` server to `~/tradingview-mcp`
-2. Install npm dependencies
-3. Add the MCP entry to `~/.claude/mcp.json`
-4. Pre-approve TradingView tools in `~/.claude/settings.json`
-5. Copy `config/rules.json` into the MCP directory
-
-After running: restart Claude Code, open TradingView Desktop, then run `tv_health_check` in Claude Code.
-
----
-
-## Symbols Tracked
-
-| Group | Symbols |
-|-------|---------|
-| Majors | BTC, ETH, SOL |
-| Alts | LINK, AVAX, SUI |
-
-Add or remove symbols in `config/rules.json` → `watchlist.majors` / `watchlist.alts`.
-
-> **Note:** `CRYPTOCAP:TOTAL`, `CRYPTOCAP:TOTAL3`, `CRYPTOCAP:BTC.D` are kept in rules.json for Claude Code / TradingView reference but are skipped in the bot's live data scan (not available via exchange APIs).
-
----
-
-## Troubleshooting
-
-| Problem | Fix |
-|---------|-----|
-| `TELEGRAM_BOT_TOKEN is not set` | Create `.env` from `.env.example` and add your token |
-| `/scan` returns no data | Check internet connection; Binance may be rate-limiting |
-| Voice messages fail | Add `OPENAI_API_KEY` to `.env` |
-| Claude returns an error | Check `ANTHROPIC_API_KEY` and your account credits |
-| `tv_health_check` fails in Claude Code | Close TradingView fully, re-run `setup_mcp.ps1`, restart Claude Code |
+Requires `TELEGRAM_BOT_TOKEN` (and optionally `OPENAI_API_KEY` for voice).

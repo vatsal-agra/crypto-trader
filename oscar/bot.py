@@ -19,7 +19,7 @@ from telegram.ext import (
 )
 
 from oscar.analyzer import Analyzer
-from oscar.market import MarketDataService, parse_tv_symbol
+from oscar.market import MarketDataService
 from oscar.paper_trader import PaperTrader
 from oscar.voice import transcribe_voice
 from engine.strategies_store import StrategyConfig, FALLBACK_STRATEGIES

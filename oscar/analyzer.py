@@ -36,7 +36,7 @@ class Analyzer:
             raise ValueError("GEMINI_API_KEY is not set in your .env file.")
 
         self._client = genai.Client(api_key=api_key)
-        self._model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        self._model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         system = OSCAR_SYSTEM_PROMPT.format(rules_json=json.dumps(rules, indent=2))
         self._config = types.GenerateContentConfig(
             system_instruction=system,
