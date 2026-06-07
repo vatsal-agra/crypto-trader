@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 from typing import Optional
 
 import pandas as pd
@@ -31,6 +33,12 @@ TIMEFRAME_MAP: dict[str, str] = {
 _AUTO_EXCHANGES = ["binance", "binanceus", "kucoin", "gateio", "okx", "kraken", "coinbase"]
 
 _SNAPSHOT_CONCURRENCY = 8
+
+# How long a full tickers snapshot is reused before refetching. Keeps the
+# dashboard snappy: one exchange round-trip serves every price lookup (all
+# agents, all positions, every endpoint) within the window instead of one
+# round-trip per position per request.
+_PRICE_CACHE_TTL = float(os.getenv("PRICE_CACHE_TTL", "8"))
 
 
 def parse_tv_symbol(tv_symbol: str) -> Optional[tuple[str, str]]:
@@ -135,6 +143,10 @@ class MarketDataService:
         self._ex_lock = asyncio.Lock()
         self._sem = asyncio.Semaphore(_SNAPSHOT_CONCURRENCY)
         self.active_exchange: Optional[str] = None
+        # Shared TTL cache of the full tickers snapshot (ccxt_sym -> last price).
+        self._tickers_cache: dict[str, float] = {}
+        self._tickers_ts: float = 0.0
+        self._tickers_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Exchange lifecycle
@@ -246,8 +258,43 @@ class MarketDataService:
         df.set_index("ts", inplace=True)
         return df[["open", "high", "low", "close", "volume"]].astype(float)
 
+    async def _all_tickers(self, force: bool = False) -> dict[str, float]:
+        """Full tickers snapshot (ccxt_sym -> last price), cached for a few seconds.
+
+        A single ``fetch_tickers()`` round-trip backs every price lookup within
+        the TTL window, so the dashboard's combined poll (portfolio + arena +
+        positions, many overlapping symbols) no longer fans out into dozens of
+        sequential exchange calls.
+        """
+        now = time.monotonic()
+        if not force and self._tickers_cache and now - self._tickers_ts < _PRICE_CACHE_TTL:
+            return self._tickers_cache
+        async with self._tickers_lock:
+            now = time.monotonic()
+            if not force and self._tickers_cache and now - self._tickers_ts < _PRICE_CACHE_TTL:
+                return self._tickers_cache
+            ex = await self._exchange()
+            try:
+                async with self._sem:
+                    tickers = await ex.fetch_tickers()
+                cache: dict[str, float] = {}
+                for cs, t in tickers.items():
+                    price = (t or {}).get("last") or (t or {}).get("close")
+                    if price is not None:
+                        cache[cs] = float(price)
+                if cache:
+                    self._tickers_cache = cache
+                    self._tickers_ts = now
+            except Exception as exc:
+                logger.warning("fetch_tickers (cache) failed: %s", repr(exc)[:120])
+        return self._tickers_cache
+
     async def get_price(self, symbol: str) -> Optional[float]:
         ccxt_sym = _normalize_symbol(symbol, self._quote)
+        cache = await self._all_tickers()
+        if ccxt_sym in cache:
+            return cache[ccxt_sym]
+        # Not in the snapshot (thin or newly listed pair) — one direct lookup.
         ex = await self._exchange()
         try:
             async with self._sem:
@@ -262,27 +309,23 @@ class MarketDataService:
         """Batch price lookup; keys are bare bases (e.g. 'BTC')."""
         if not symbols:
             return {}
-        ex = await self._exchange()
         ccxt_syms = [_normalize_symbol(s, self._quote) for s in symbols]
+        cache = await self._all_tickers()
         out: dict[str, float] = {}
-        try:
-            tickers = await ex.fetch_tickers(ccxt_syms)
-            for cs in ccxt_syms:
-                t = tickers.get(cs) or {}
-                price = t.get("last") or t.get("close")
-                if price is not None:
-                    out[cs.split("/")[0]] = float(price)
-            if out:
-                return out
-        except Exception as exc:
-            logger.debug("Batch tickers failed: %s — per-symbol fallback", repr(exc)[:100])
+        missing: list[str] = []
+        for cs in ccxt_syms:
+            if cs in cache:
+                out[cs.split("/")[0]] = cache[cs]
+            else:
+                missing.append(cs)
 
-        async def _one(cs: str) -> None:
-            p = await self.get_price(cs)
-            if p is not None:
-                out[cs.split("/")[0]] = p
+        if missing:
+            async def _one(cs: str) -> None:
+                p = await self.get_price(cs)
+                if p is not None:
+                    out[cs.split("/")[0]] = p
 
-        await asyncio.gather(*[_one(cs) for cs in ccxt_syms])
+            await asyncio.gather(*[_one(cs) for cs in missing])
         return out
 
     # ------------------------------------------------------------------
