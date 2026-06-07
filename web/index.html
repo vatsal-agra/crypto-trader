@@ -3,23 +3,58 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Oscar — Trading Dashboard</title>
+  <title>Autonomous Arena — AI Crypto Trader</title>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
     * { box-sizing: border-box; }
-    body { margin: 0; background: #0d0f17; color: #e2e8f0; font-family: ui-monospace, 'Cascadia Code', monospace; }
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: #1a1d2e; }
-    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
-    .card { background: #141720; border: 1px solid #1e2433; border-radius: 10px; }
-    .glow-green { text-shadow: 0 0 10px #00c08766; }
-    .glow-red   { text-shadow: 0 0 10px #f2364566; }
-    @keyframes pulse-dot { 0%,100%{opacity:1;} 50%{opacity:.3;} }
-    .live-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
+    :root {
+      --bg: #07090f; --panel: #0e1320; --panel2: #131a2b; --border: #1d2740;
+      --green: #00e6a8; --red: #ff4d6d; --dim: #5b6b86; --text: #e6ecf7; --accent: #6c8cff;
+    }
+    html, body { margin: 0; height: 100%; }
+    body {
+      background:
+        radial-gradient(1200px 600px at 12% -10%, #16204022 0%, transparent 60%),
+        radial-gradient(1000px 500px at 100% 0%, #2a164022 0%, transparent 55%),
+        var(--bg);
+      color: var(--text);
+      font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #28324d; border-radius: 6px; }
+    ::-webkit-scrollbar-thumb:hover { background: #38456b; }
+    .glass {
+      background: linear-gradient(180deg, #121a2c99, #0d1322cc);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 8px 30px #00000055, inset 0 1px 0 #ffffff08;
+    }
+    .glass-hover { transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease; }
+    .glass-hover:hover { transform: translateY(-2px); border-color: #2f3d63; box-shadow: 0 14px 40px #00000077, 0 0 0 1px #2f3d6355; }
+    .glow-green { text-shadow: 0 0 14px #00e6a877; }
+    .glow-red { text-shadow: 0 0 14px #ff4d6d77; }
+    .chip { border:1px solid var(--border); border-radius:999px; padding:2px 9px; font-size:11px; }
+    .live-dot { width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green);animation:pulse 1.4s ease-in-out infinite;}
+    .idle-dot { width:8px;height:8px;border-radius:50%;background:var(--dim);}
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:.35;transform:scale(.8);} }
+    @keyframes fadein { from{opacity:0;transform:translateY(6px);} to{opacity:1;transform:none;} }
+    .fadein { animation: fadein .35s ease both; }
+    .grad-text { background: linear-gradient(90deg,#6c8cff,#00e6a8); -webkit-background-clip:text; background-clip:text; color:transparent; }
+    .scan { position:relative; overflow:hidden; }
+    .bar-track { background:#1a2236; border-radius:999px; overflow:hidden; }
+    .tab-active { background: linear-gradient(90deg,#1b2540,#162038); border:1px solid #2f3d63; color:#fff; }
+    .tab-idle { color: var(--dim); border:1px solid transparent; }
+    .tab-idle:hover { color:#c6d2ea; }
   </style>
 </head>
 <body>
@@ -28,867 +63,491 @@
 <script type="text/babel">
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
-const G = '#00c087';
-const R = '#f23645';
-const DIM = '#475569';
+const G = '#00e6a8', R = '#ff4d6d', DIM = '#5b6b86', ACCENT = '#6c8cff';
+const api = (p) => fetch(p).then(r => r.json()).catch(() => null);
+const fmt = (n, d = 2) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+const sign = (n, d = 2) => (n >= 0 ? '+' : '') + fmt(n, d);
+const usd = (n, d = 2) => '$' + fmt(n, d);
+const pct = (n) => sign(n, 2) + '%';
+const pnlColor = (n) => (n > 0 ? G : n < 0 ? R : DIM);
+const short = (s, n) => (s && s.length > n ? s.slice(0, n) + '…' : (s || ''));
+const ago = (iso) => {
+  if (!iso) return '—';
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return Math.floor(s) + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  return Math.floor(s / 3600) + 'h ago';
+};
 
-const api = (path) => fetch(path).then(r => r.json()).catch(() => null);
-
-const fmt = (n, d = 2) => (n ?? 0).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
-const fmtSign = (n, d = 2) => (n >= 0 ? '+' : '') + fmt(n, d);
-const fmtDollar = (n, d = 2) => '$' + fmt(n, d);
-const fmtPct = (n) => fmtSign(n, 2) + '%';
-
-// ── Mini stat card ──────────────────────────────────────────────────────────
-function Stat({ label, value, color, sub }) {
+// ── tiny SVG sparkline ──────────────────────────────────────────────────────
+function Spark({ data, color = G, h = 34, w = 130 }) {
+  if (!data || data.length < 2) return <svg width={w} height={h} />;
+  const vals = data.map(d => d.value);
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const rng = max - min || 1;
+  const pts = data.map((d, i) => {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - 4 - ((d.value - min) / rng) * (h - 8);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const id = 'g' + color.replace('#', '');
   return (
-    <div className="card p-3">
-      <p className="text-xs text-slate-500 mb-1">{label}</p>
-      <p className="text-lg font-bold" style={color ? { color } : {}}>{value}</p>
-      {sub && <p className="text-xs mt-0.5" style={{ color: DIM }}>{sub}</p>}
+    <svg width={w} height={h} style={{ display: 'block' }}>
+      <defs><linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+        <stop offset="100%" stopColor={color} stopOpacity="0" />
+      </linearGradient></defs>
+      <polyline points={pts.join(' ')} fill="none" stroke={color} strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />
+      <polygon points={`0,${h} ${pts.join(' ')} ${w},${h}`} fill={`url(#${id})`} />
+    </svg>
+  );
+}
+
+// ── KPI stat ────────────────────────────────────────────────────────────────
+function Kpi({ label, value, color, sub, big }) {
+  return (
+    <div className="glass glass-hover p-4 fadein">
+      <p className="text-[11px] uppercase tracking-wider" style={{ color: DIM }}>{label}</p>
+      <p className={`mono font-bold ${big ? 'text-3xl' : 'text-xl'} mt-1`} style={color ? { color } : {}}>{value}</p>
+      {sub && <p className="text-xs mt-1" style={{ color: DIM }}>{sub}</p>}
     </div>
   );
 }
 
-// ── Price ticker bar ────────────────────────────────────────────────────────
-function Ticker({ prices }) {
-  if (!prices) return null;
-  const items = Object.entries(prices).filter(([, d]) => d?.price);
+// ── header / status bar ─────────────────────────────────────────────────────
+function Header({ engine, config }) {
+  const running = engine?.running;
   return (
-    <div className="flex gap-5 text-xs overflow-x-auto">
-      {items.map(([sym, d]) => {
-        const color = d.bias === 'BULLISH' ? G : d.bias === 'BEARISH' ? R : DIM;
+    <div className="glass px-5 py-4 flex flex-wrap items-center gap-x-6 gap-y-2">
+      <div className="flex items-center gap-3">
+        <div style={{ width: 38, height: 38, borderRadius: 11, background: 'linear-gradient(135deg,#6c8cff,#00e6a8)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 0 22px #6c8cff55' }}>
+          <span className="text-xl">⚡</span>
+        </div>
+        <div>
+          <h1 className="text-lg font-extrabold leading-tight grad-text">AUTONOMOUS ARENA</h1>
+          <p className="text-[11px]" style={{ color: DIM }}>AI-driven crypto trader · nothing hardcoded</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 ml-auto flex-wrap">
+        <span className="chip flex items-center gap-2" style={{ color: running ? G : DIM }}>
+          <span className={running ? 'live-dot' : 'idle-dot'}></span>{running ? 'LIVE' : 'IDLE'}
+        </span>
+        <span className="chip" style={{ color: '#ffd166', borderColor: '#3a3520' }}>PAPER</span>
+        <span className="chip mono" style={{ color: ACCENT }}>{engine?.exchange || '—'}</span>
+        <span className="chip mono" style={{ color: '#c6d2ea' }}>{engine?.num_agents ?? '—'} agents</span>
+        <span className="chip mono" style={{ color: G }}>{engine?.gemini_keys ?? 0}× key</span>
+        <span className="chip mono" style={{ color: '#c6d2ea' }}>universe {engine?.universe_size ?? 0}</span>
+        <span className="chip mono" style={{ color: DIM }}>cycle {engine?.interval_minutes ?? '—'}m</span>
+        <span className="chip mono" style={{ color: DIM }}>run #{engine?.runs ?? 0}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── universe heatmap ────────────────────────────────────────────────────────
+function Heatmap({ universe }) {
+  if (!universe || !universe.length) {
+    return <div className="text-sm" style={{ color: DIM }}>Discovering universe…</div>;
+  }
+  const cells = universe.slice(0, 48);
+  const cap = 12;
+  return (
+    <div className="grid gap-1.5" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(74px,1fr))' }}>
+      {cells.map((u) => {
+        const c = typeof u.pct_change === 'number' ? u.pct_change : 0;
+        const t = Math.max(-1, Math.min(1, c / cap));
+        const bg = t >= 0
+          ? `rgba(0,230,168,${0.10 + 0.5 * t})`
+          : `rgba(255,77,109,${0.10 + 0.5 * -t})`;
         return (
-          <span key={sym} className="flex items-center gap-1.5 shrink-0">
-            <span className="text-slate-500">{sym}</span>
-            <span className="font-bold">{fmtDollar(d.price, d.price < 1 ? 4 : 2)}</span>
-            <span style={{ color }} className="text-[10px]">
-              {d.bias === 'BULLISH' ? '▲' : d.bias === 'BEARISH' ? '▼' : '─'}
-            </span>
-          </span>
+          <div key={u.symbol} title={`${u.base} 24h vol ${fmt(u.quote_volume,0)}`}
+               className="rounded-lg px-2 py-1.5 text-center"
+               style={{ background: bg, border: '1px solid #ffffff10' }}>
+            <div className="mono text-[11px] font-bold">{u.base}</div>
+            <div className="mono text-[10px]" style={{ color: c >= 0 ? G : R }}>{pct(c)}</div>
+          </div>
         );
       })}
     </div>
   );
 }
 
-// ── Sidebar ─────────────────────────────────────────────────────────────────
-function Sidebar({ portfolio, engine, selectedStrategy, setSelectedStrategy, strategies }) {
-  if (!portfolio) return (
-    <div className="w-52 border-r border-slate-800/60 p-4 space-y-3">
-      <div className="text-[10px] text-slate-500 uppercase tracking-widest mb-2">Select Engine</div>
-      <div className="h-8 bg-slate-800/40 rounded animate-pulse mb-3" />
-      {[1,2,3].map(i => <div key={i} className="card h-16 animate-pulse" />)}
-    </div>
-  );
-
-  const pnl = portfolio.total_pnl ?? 0;
-  const pnlColor = pnl >= 0 ? G : R;
-  const st = portfolio.stats ?? {};
-
-  // Find active strategy details if specific
-  const activeStrat = (strategies ?? []).find(s => s.id === selectedStrategy);
-
+// ── agent card ──────────────────────────────────────────────────────────────
+function AgentCard({ a, hist, selected, onClick }) {
+  const up = a.pnl >= 0;
+  const initial = a.equity - a.pnl;
+  const deployed = Math.max(0, Math.min(100, ((a.equity - a.balance) / (a.equity || 1)) * 100));
   return (
-    <aside className="w-52 border-r border-slate-800/60 p-3 overflow-y-auto flex flex-col gap-3">
-      {/* Strategy Selector on top */}
-      <div>
-        <label className="text-[10px] text-slate-500 uppercase tracking-widest block mb-1.5">Strategy Scope</label>
-        <select
-          value={selectedStrategy}
-          onChange={(e) => setSelectedStrategy(e.target.value)}
-          className="w-full bg-[#141720] border border-slate-800 hover:border-slate-700 text-white rounded px-2 py-1.5 text-xs font-bold outline-none cursor-pointer">
-          <option value="all">🌍 All Strategies Combined</option>
-          {(strategies ?? []).map(s => (
-            <option key={s.id} value={s.id}>🤖 {s.name}</option>
-          ))}
-        </select>
-      </div>
-
-      <div className="card p-3">
-        <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-2">Account Metrics</p>
-        <p className="text-xs text-slate-500">Total Equity</p>
-        <p className="text-2xl font-bold mb-2">{fmtDollar(portfolio.equity)}</p>
-        <div className="grid grid-cols-3 gap-1 py-2 text-[10px] border-t border-slate-800/50">
-          <div>
-            <p className="text-slate-500">Free</p>
-            <p className="font-bold text-slate-200">{fmtDollar(portfolio.balance)}</p>
-          </div>
-          <div>
-            <p className="text-slate-500">In Purse</p>
-            <p className="font-bold text-amber-400">💰{fmtDollar(portfolio.profit_purse ?? 0)}</p>
-          </div>
-          <div>
-            <p className="text-slate-500">Started</p>
-            <p className="font-bold text-slate-200">{fmtDollar(portfolio.initial_balance)}</p>
-          </div>
+    <div onClick={onClick}
+      className={`glass glass-hover p-4 cursor-pointer fadein ${selected ? '' : ''}`}
+      style={selected ? { borderColor: ACCENT, boxShadow: '0 0 0 1px ' + ACCENT + '66, 0 14px 40px #00000077' } : {}}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="font-bold text-sm truncate">{a.strategy?.name || a.name}</p>
+          <p className="text-[11px] truncate" style={{ color: DIM }}>{a.persona}</p>
+        </div>
+        <div className="text-right shrink-0">
+          <p className="mono font-bold text-sm" style={{ color: pnlColor(a.pnl) }}>{pct(a.pnl_pct)}</p>
+          <p className="mono text-[11px]" style={{ color: DIM }}>{usd(a.equity, 0)}</p>
         </div>
       </div>
-
-      <div className="card p-3">
-        <p className="text-xs text-slate-500">Realized P&amp;L</p>
-        <p className="text-xl font-bold" style={{ color: pnlColor }}>
-          {fmtSign(pnl)}
-        </p>
-        <p className="text-xs" style={{ color: pnlColor }}>{fmtPct(portfolio.total_pnl_pct)}</p>
+      <div className="my-2 -mx-1"><Spark data={hist} color={up ? G : R} w={260} h={38} /></div>
+      <div className="flex items-center justify-between text-[11px]" style={{ color: DIM }}>
+        <span>{a.open_positions} open · {a.stats?.count || 0} closed</span>
+        <span className="mono">WR {fmt(a.stats?.win_rate || 0, 0)}%</span>
       </div>
-
-      {st.count > 0 && (
-        <div className="card p-3 space-y-1 text-xs">
-          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1.5">Performance</p>
-          <div className="flex justify-between">
-            <span className="text-slate-500">Win Rate</span>
-            <span>{fmt(st.win_rate, 1)}%</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-500">Trades</span>
-            <span className="text-slate-300">{st.wins}W / {st.losses}L</span>
-          </div>
-        </div>
-      )}
-
-      {/* Info card for active strategy */}
-      {activeStrat ? (
-        <div className="card p-3 text-xs space-y-1">
-          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Rules</p>
-          <p className="font-bold text-slate-300">{activeStrat.name}</p>
-          <StrategyBadge style={activeStrat.style} />
-          <p className="text-slate-500 mt-2">
-            Long RSI: {activeStrat.long_rsi_min}–{activeStrat.long_rsi_max}
-          </p>
-          <p className="text-slate-500">
-            Short RSI: {activeStrat.short_rsi_min}–{activeStrat.short_rsi_max}
-          </p>
-          <p className="text-slate-500">
-            EMA Filter: {activeStrat.require_ema_filter ? '✓ Active' : '✗ Bypassed'}
-          </p>
-          <p className="text-slate-500">
-            4H Struct: {activeStrat.require_structure ? '✓ Active' : '✗ Bypassed'}
-          </p>
-          <p className="text-slate-400 mt-1.5 font-bold">
-            💰 {(activeStrat.risk_pct * 100).toFixed(1)}% risk | {activeStrat.rr_ratio}:1 R/R
-          </p>
-        </div>
-      ) : (
-        <div className="card p-3 text-xs space-y-1">
-          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Arena Stats</p>
-          <p className="text-slate-400 font-bold">5 Strategies Live</p>
-          <p className="text-slate-500">Each strategy runs with an independent $10,000 account balance.</p>
-        </div>
-      )}
-    </aside>
-  );
-}
-
-// ── Candlestick Chart ───────────────────────────────────────────────────────
-function CandleChart({ symbol }) {
-  const containerRef = useRef(null);
-  const chartRef = useRef(null);
-  const seriesRef = useRef(null);
-  const [tf, setTf] = useState('4h');
-
-  useEffect(() => {
-    if (!containerRef.current || chartRef.current) return;
-    const chart = LightweightCharts.createChart(containerRef.current, {
-      layout: { background: { color: '#141720' }, textColor: '#94a3b8' },
-      grid: { vertLines: { color: '#1e2433' }, horzLines: { color: '#1e2433' } },
-      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-      rightPriceScale: { borderColor: '#1e2433' },
-      timeScale: { borderColor: '#1e2433', timeVisible: true, secondsVisible: false },
-      width: containerRef.current.clientWidth,
-      height: 380,
-    });
-    const cs = chart.addCandlestickSeries({
-      upColor: G, downColor: R,
-      borderUpColor: G, borderDownColor: R,
-      wickUpColor: G, wickDownColor: R,
-    });
-    chartRef.current = chart;
-    seriesRef.current = cs;
-
-    const onResize = () => {
-      if (containerRef.current && chartRef.current) {
-        chartRef.current.applyOptions({ width: containerRef.current.clientWidth });
-      }
-    };
-    window.addEventListener('resize', onResize);
-    return () => {
-      window.removeEventListener('resize', onResize);
-      chart.remove();
-      chartRef.current = null;
-    };
-  }, []);
-
-  const fetchCandles = useCallback(async () => {
-    const sym = symbol.replace('/', '');
-    const data = await api(`/api/candles/${sym}?tf=${tf}&limit=300`);
-    if (seriesRef.current && data?.candles?.length) {
-      seriesRef.current.setData(data.candles);
-      chartRef.current?.timeScale().fitContent();
-    }
-  }, [symbol, tf]);
-
-  useEffect(() => {
-    fetchCandles();
-    const id = setInterval(fetchCandles, 30_000);
-    return () => clearInterval(id);
-  }, [fetchCandles]);
-
-  return (
-    <div>
-      <div className="flex gap-1.5 mb-3">
-        {['1h', '4h', '1d'].map(t => (
-          <button key={t} onClick={() => setTf(t)}
-            className={`px-2.5 py-1 rounded text-xs font-bold transition-colors
-              ${tf === t ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>
-            {t.toUpperCase()}
-          </button>
-        ))}
-      </div>
-      <div ref={containerRef} />
+      <div className="bar-track h-1.5 mt-2"><div style={{ width: deployed + '%', height: '100%', background: 'linear-gradient(90deg,#6c8cff,#00e6a8)' }} /></div>
+      <p className="text-[11px] mt-2 leading-snug" style={{ color: '#9fb0cc' }}>{short(a.strategy_memo || a.last_commentary, 120) || 'awaiting first decision…'}</p>
     </div>
   );
 }
 
-// ── Charts Tab ───────────────────────────────────────────────────────────────
-const SYMBOLS = ['BTC/USDT','ETH/USDT','SOL/USDT','LINK/USDT','AVAX/USDT','SUI/USDT'];
-
-function ChartsTab({ prices }) {
-  const [active, setActive] = useState('BTC/USDT');
-  const base = active.replace('/USDT', '');
-  const pd = prices?.[base];
-
+// ── positions table ─────────────────────────────────────────────────────────
+function Positions({ rows }) {
+  if (!rows || !rows.length) return <p className="text-sm py-6 text-center" style={{ color: DIM }}>No open positions.</p>;
   return (
-    <div>
-      <div className="flex gap-1.5 mb-4 flex-wrap">
-        {SYMBOLS.map(s => {
-          const b = s.replace('/USDT', '');
-          const bias = prices?.[b]?.bias;
-          const dot = bias === 'BULLISH' ? '🟢' : bias === 'BEARISH' ? '🔴' : '🟡';
-          return (
-            <button key={s} onClick={() => setActive(s)}
-              className={`px-3 py-1.5 rounded text-xs font-bold flex items-center gap-1 transition-colors
-                ${active === s ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>
-              {dot} {b}
-            </button>
-          );
-        })}
-      </div>
-      <div className="card p-4">
-        <div className="flex items-baseline gap-3 mb-4">
-          <p className="font-bold text-lg">{active}</p>
-          {pd?.price && (
-            <p className="text-xl font-bold" style={{ color: pd.bias === 'BULLISH' ? G : pd.bias === 'BEARISH' ? R : '#94a3b8' }}>
-              {fmtDollar(pd.price, pd.price < 1 ? 4 : 2)}
-            </p>
-          )}
-          {pd?.bias && (
-            <span className="text-xs px-2 py-0.5 rounded font-bold"
-              style={{ background: pd.bias === 'BULLISH' ? '#00c08722' : pd.bias === 'BEARISH' ? '#f2364522' : '#47556922',
-                       color: pd.bias === 'BULLISH' ? G : pd.bias === 'BEARISH' ? R : DIM }}>
-              {pd.bias}
-            </span>
-          )}
-        </div>
-        <CandleChart key={active} symbol={active} />
-      </div>
-    </div>
-  );
-}
-
-// ── Positions Tab ────────────────────────────────────────────────────────────
-function PositionsTab({ positions }) {
-  if (!positions?.length) return (
-    <div className="card p-12 text-center">
-      <p className="text-3xl mb-3">📋</p>
-      <p className="text-slate-500">No open positions</p>
-      <p className="text-xs text-slate-600 mt-1">The engines will enter trades automatically when setups appear</p>
-    </div>
-  );
-
-  // Group positions by strategy
-  const grouped = {};
-  positions.forEach(p => {
-    const key = p.strategy_name || "General";
-    if (!grouped[key]) grouped[key] = [];
-    grouped[key].push(p);
-  });
-
-  return (
-    <div className="space-y-6">
-      {Object.entries(grouped).map(([stratName, list]) => (
-        <div key={stratName} className="space-y-2">
-          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider pl-1 flex items-center gap-1.5">
-            <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-            {stratName} ({list.length})
-          </h3>
-          <div className="card overflow-hidden">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-slate-800 text-slate-500">
-                  {['Symbol','Side','Entry','Current','Stop','Target','Unreal P&L','Size','Opened'].map(h =>
-                    <th key={h} className="px-4 py-3 text-left font-medium">{h}</th>
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {list.map(p => {
-                  const pnl = p.unrealized_pnl ?? 0;
-                  return (
-                    <tr key={`${stratName}-${p.symbol}`} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="px-4 py-3 font-bold text-slate-200">{p.symbol}</td>
-                      <td className="px-4 py-3">
-                        <span className="px-2 py-0.5 rounded font-bold"
-                          style={{ background: p.side === 'LONG' ? '#00c08720' : '#f2364520',
-                                   color: p.side === 'LONG' ? G : R }}>
-                          {p.side}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 font-mono">{fmtDollar(p.entry, 4)}</td>
-                      <td className="px-4 py-3 font-mono font-bold">{fmtDollar(p.current_price, 4)}</td>
-                      <td className="px-4 py-3 font-mono" style={{ color: R }}>{fmtDollar(p.stop, 4)}</td>
-                      <td className="px-4 py-3 font-mono" style={{ color: G }}>{fmtDollar(p.target, 4)}</td>
-                      <td className="px-4 py-3 font-mono font-bold" style={{ color: pnl >= 0 ? G : R }}>
-                        {fmtSign(pnl)} ({fmtPct(p.pnl_pct)})
-                      </td>
-                      <td className="px-4 py-3 font-mono text-slate-400">{(p.size ?? 0).toFixed(5)}</td>
-                      <td className="px-4 py-3 text-slate-500">{(p.opened_at ?? '').slice(0, 16).replace('T', ' ')}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ── History Tab ───────────────────────────────────────────────────────────────
-function HistoryTab({ trades }) {
-  if (!trades?.length) return (
-    <div className="card p-12 text-center">
-      <p className="text-3xl mb-3">📜</p>
-      <p className="text-slate-500">No closed trades yet</p>
-    </div>
-  );
-
-  return (
-    <div className="card overflow-hidden">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b border-slate-800 text-slate-500">
-            {['Result','Symbol','Side','Entry','Exit','P&L','P&L %','Strategy','Closed'].map(h =>
-              <th key={h} className="px-4 py-3 text-left font-medium">{h}</th>
-            )}
-          </tr>
-        </thead>
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead><tr className="text-left" style={{ color: DIM }}>
+          {['Coin', 'Side', 'Entry', 'Now', 'Size', 'uPnL', '%', 'Stop', 'Target'].map((h) =>
+            <th key={h} className="font-medium pb-2 px-2 text-[11px] uppercase tracking-wide">{h}</th>)}
+          {rows[0]?.strategy_name && <th className="font-medium pb-2 px-2 text-[11px] uppercase tracking-wide">Agent</th>}
+        </tr></thead>
         <tbody>
-          {trades.map((t, i) => {
-            const pnl = t.pnl ?? 0;
-            const cost = (t.entry ?? 0) * (t.size ?? 0);
-            const pnlPct = cost ? (pnl / cost * 100) : 0;
-            return (
-              <tr key={i} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                <td className="px-4 py-3 text-base">{pnl >= 0 ? '✅' : '🟥'}</td>
-                <td className="px-4 py-3 font-bold text-slate-200">{t.symbol}</td>
-                <td className="px-4 py-3">
-                  <span className="px-2 py-0.5 rounded font-bold"
-                    style={{ background: t.side === 'LONG' ? '#00c08720' : '#f2364520',
-                             color: t.side === 'LONG' ? G : R }}>
-                    {t.side}
-                  </span>
-                </td>
-                <td className="px-4 py-3 font-mono">{fmtDollar(t.entry, 4)}</td>
-                <td className="px-4 py-3 font-mono">{fmtDollar(t.exit, 4)}</td>
-                <td className="px-4 py-3 font-mono font-bold" style={{ color: pnl >= 0 ? G : R }}>
-                  {fmtSign(pnl)}
-                </td>
-                <td className="px-4 py-3 font-mono" style={{ color: pnl >= 0 ? G : R }}>
-                  {fmtPct(pnlPct)}
-                </td>
-                <td className="px-4 py-3">
-                  {t.strategy_name ? (
-                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 font-medium">
-                      {t.strategy_name}
-                    </span>
-                  ) : (
-                    <span className="text-slate-600">—</span>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-slate-500">
-                  {(t.closed_at ?? '').slice(0, 16).replace('T', ' ')}
-                </td>
-              </tr>
-            );
-          })}
+          {rows.map((p, i) => (
+            <tr key={i} className="border-t" style={{ borderColor: '#161d30' }}>
+              <td className="mono py-2 px-2 font-bold">{p.symbol}</td>
+              <td className="px-2"><span className="chip mono" style={{ color: p.side === 'LONG' ? G : R, borderColor: (p.side === 'LONG' ? G : R) + '44' }}>{p.side}</span></td>
+              <td className="mono px-2">{fmt(p.entry, 5)}</td>
+              <td className="mono px-2">{fmt(p.current_price, 5)}</td>
+              <td className="mono px-2">{usd(p.size_usd || (p.size * p.entry), 0)}</td>
+              <td className="mono px-2 font-bold" style={{ color: pnlColor(p.unrealized_pnl) }}>{sign(p.unrealized_pnl)}</td>
+              <td className="mono px-2" style={{ color: pnlColor(p.pnl_pct) }}>{pct(p.pnl_pct)}</td>
+              <td className="mono px-2" style={{ color: R }}>{fmt(p.stop, 5)}</td>
+              <td className="mono px-2" style={{ color: G }}>{fmt(p.target, 5)}</td>
+              {p.strategy_name && <td className="px-2 text-[11px]" style={{ color: DIM }}>{p.strategy_name}</td>}
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
   );
 }
 
-// ── Engine Tab ────────────────────────────────────────────────────────────────
-function EngineTab({ engine, onToggle, onModeToggle }) {
-  if (!engine) return <div className="card h-32 animate-pulse" />;
-  const unleashed = engine.unleashed ?? false;
-
+function Trades({ rows }) {
+  if (!rows || !rows.length) return <p className="text-sm py-6 text-center" style={{ color: DIM }}>No closed trades yet.</p>;
   return (
-    <div className="space-y-4">
-      {/* Status row */}
-      <div className="card p-4">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className={`w-3 h-3 rounded-full ${engine.running ? 'live-dot bg-emerald-400' : 'bg-red-500'}`} />
-            <span className="font-bold text-sm">{engine.running ? 'Engine Running' : 'Engine Paused'}</span>
-            <span className="text-xs text-slate-500">• Every {engine.interval_minutes} min</span>
-          </div>
-          <button onClick={onToggle}
-            className={`px-4 py-1.5 rounded text-xs font-bold transition-colors
-              ${engine.running
-                ? 'bg-red-900/40 text-red-400 hover:bg-red-900/60 border border-red-900/50'
-                : 'bg-emerald-900/40 text-emerald-400 hover:bg-emerald-900/60 border border-emerald-900/50'}`}>
-            {engine.running ? 'Pause Engine' : 'Start Engine'}
-          </button>
-        </div>
-        <div className="grid grid-cols-3 gap-4 text-xs">
-          <div>
-            <p className="text-slate-500 mb-1">Scans Completed</p>
-            <p className="font-bold text-lg">{engine.runs}</p>
-          </div>
-          <div>
-            <p className="text-slate-500 mb-1">Last Run</p>
-            <p>{engine.last_run ? engine.last_run.slice(0, 16).replace('T', ' ') + ' UTC' : '—'}</p>
-          </div>
-          <div>
-            <p className="text-slate-500 mb-1">Next Run</p>
-            <p>{engine.next_run ? engine.next_run.slice(0, 16).replace('T', ' ') + ' UTC' : '—'}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* UNLEASH TOGGLE */}
-      <div className={`card p-5 transition-all duration-300 ${unleashed
-        ? 'border-orange-500/60 shadow-[0_0_24px_#f97316_22]'
-        : 'border-slate-800'}`}>
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-lg">{unleashed ? '🔥' : '🔒'}</span>
-              <span className={`font-bold text-sm tracking-wide ${unleashed ? 'text-orange-400' : 'text-slate-300'}`}>
-                {unleashed ? 'UNLEASHED MODE' : 'Restricted Mode'}
-              </span>
-            </div>
-            <p className="text-xs text-slate-500 max-w-md">
-              {unleashed
-                ? 'Oscar is completely free — Gemini AI decides every entry, exit, size, stop and target. No rules. No limits. Pure instinct.'
-                : 'Fixed rules: 1% risk per trade, 2:1 R/R, structural stop. Deterministic and safe.'}
-            </p>
-          </div>
-
-          {/* Toggle switch */}
-          <button onClick={onModeToggle}
-            className={`relative w-14 h-7 rounded-full transition-all duration-300 focus:outline-none
-              ${unleashed ? 'bg-orange-500' : 'bg-slate-700'}`}>
-            <span className={`absolute top-1 w-5 h-5 rounded-full bg-white shadow transition-all duration-300
-              ${unleashed ? 'left-8' : 'left-1'}`} />
-          </button>
-        </div>
-
-        {unleashed && (
-          <div className="mt-4 p-3 rounded-lg bg-orange-950/30 border border-orange-900/40">
-            <p className="text-xs text-orange-400/80 font-mono">
-              ⚡ Oscar reads live RSI, EMAs, 4H structure for all 6 coins then sends his full analysis to Gemini.
-              Gemini decides what to buy, what to sell, how much, and why — completely on its own terms.
-              Every decision is logged and sent to your Telegram.
-            </p>
-          </div>
-        )}
-      </div>
-
-      {/* Activity Log */}
-      <div className="card p-4">
-        <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-3">Activity Log</p>
-        <div className="space-y-0.5 max-h-72 overflow-y-auto font-mono">
-          {[...(engine.log ?? [])].reverse().map((entry, i) => (
-            <div key={i} className="flex gap-3 text-xs py-0.5">
-              <span className="text-slate-700 shrink-0 w-16">{(entry.time ?? '').slice(11, 19)}</span>
-              <span className={
-                entry.level === 'TRADE'
-                  ? (entry.msg?.includes('[UNLEASHED]') ? 'text-orange-400' : 'text-yellow-400')
-                  : entry.level === 'ERROR' ? 'text-red-400' : 'text-slate-500'
-              }>{entry.msg}</span>
-            </div>
+    <div className="overflow-x-auto max-h-[320px] overflow-y-auto">
+      <table className="w-full text-sm">
+        <thead className="sticky top-0" style={{ background: '#0e1320' }}><tr className="text-left" style={{ color: DIM }}>
+          {['Coin', 'Side', 'Entry', 'Exit', 'PnL', 'Agent'].map(h => <th key={h} className="font-medium pb-2 px-2 text-[11px] uppercase tracking-wide">{h}</th>)}
+        </tr></thead>
+        <tbody>
+          {rows.map((t, i) => (
+            <tr key={i} className="border-t" style={{ borderColor: '#161d30' }}>
+              <td className="mono py-2 px-2 font-bold">{t.symbol}</td>
+              <td className="mono px-2" style={{ color: t.side === 'LONG' ? G : R }}>{t.side}</td>
+              <td className="mono px-2">{fmt(t.entry, 5)}</td>
+              <td className="mono px-2">{fmt(t.exit, 5)}</td>
+              <td className="mono px-2 font-bold" style={{ color: pnlColor(t.pnl) }}>{sign(t.pnl)}</td>
+              <td className="px-2 text-[11px]" style={{ color: DIM }}>{t.strategy_name || ''}</td>
+            </tr>
           ))}
-          {(!engine.log?.length) && (
-            <p className="text-slate-700 text-xs py-4">Waiting for first scan…</p>
-          )}
-        </div>
-      </div>
+        </tbody>
+      </table>
     </div>
   );
 }
 
-// ── Arena Tab ─────────────────────────────────────────────────────────────────
-const STYLE_COLORS = {
-  trend_follow: '#60a5fa',
-  reversal:     '#f472b6',
-  momentum:     '#34d399',
-  aggressive:   '#fb923c',
-  breakout:     '#a78bfa',
-};
-
-function StrategyBadge({ style }) {
-  const color = STYLE_COLORS[style] ?? '#94a3b8';
+// ── activity log ────────────────────────────────────────────────────────────
+function ActivityLog({ log }) {
+  const ref = useRef(null);
+  const lvlColor = (l) => l === 'TRADE' ? G : l === 'WARN' ? '#ffd166' : DIM;
   return (
-    <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest"
-      style={{ background: color + '22', color, border: `1px solid ${color}44` }}>
-      {style?.replace('_', ' ')}
-    </span>
-  );
-}
-
-function StrategyParams({ strategy }) {
-  const items = [
-    { label: 'Long RSI',  value: `${strategy.long_rsi_min}–${strategy.long_rsi_max}` },
-    { label: 'Short RSI', value: `${strategy.short_rsi_min}–${strategy.short_rsi_max}` },
-    { label: 'EMA Filter', value: strategy.require_ema_filter ? '✓ On' : '✗ Off' },
-    { label: '4H Structure', value: strategy.require_structure ? '✓ On' : '✗ Off' },
-    { label: 'Risk/Trade', value: `${(strategy.risk_pct * 100).toFixed(1)}%` },
-    { label: 'R:R Ratio',  value: `${strategy.rr_ratio}:1` },
-  ];
-  return (
-    <div className="grid grid-cols-3 gap-2 mt-3">
-      {items.map(({ label, value }) => (
-        <div key={label} className="bg-slate-900/50 rounded p-2">
-          <p className="text-[10px] text-slate-500 mb-0.5">{label}</p>
-          <p className="text-xs font-bold text-slate-300">{value}</p>
+    <div ref={ref} className="space-y-1.5 max-h-[360px] overflow-y-auto pr-1">
+      {(!log || !log.length) && <p className="text-sm" style={{ color: DIM }}>No activity yet.</p>}
+      {(log || []).slice().reverse().map((e, i) => (
+        <div key={i} className="flex gap-2 text-[12px] leading-snug">
+          <span className="mono shrink-0" style={{ color: '#33405e' }}>{(e.time || '').slice(11, 19)}</span>
+          <span className="mono shrink-0 font-bold" style={{ color: lvlColor(e.level) }}>{(e.level || 'INFO')[0]}</span>
+          <span style={{ color: '#aebcd6' }}>{e.msg}</span>
         </div>
       ))}
     </div>
   );
 }
 
-function ArenaCard({ item, selected, onClick }) {
-  const pnlColor = item.pnl >= 0 ? '#00c087' : '#f23645';
-  const strat = item.strategy;
-  return (
-    <button onClick={onClick}
-      className={`w-full text-left card p-4 transition-all duration-200
-        ${selected ? 'border-blue-500/70 shadow-[0_0_16px_#3b82f620]' : 'hover:border-slate-600'}`}>
-      <div className="flex items-start justify-between mb-2">
-        <div>
-          <p className="font-bold text-sm text-white mb-1">{strat.name}</p>
-          <StrategyBadge style={strat.style} />
-        </div>
-        <div className="text-right">
-          <p className="font-bold text-sm" style={{ color: pnlColor }}>
-            {item.pnl >= 0 ? '+' : ''}${fmt(item.pnl)}
-          </p>
-          <p className="text-[11px]" style={{ color: pnlColor }}>
-            {fmtPct(item.pnl_pct)}
-          </p>
-        </div>
-      </div>
-      <div className="flex gap-3 text-[11px] text-slate-500">
-        <span>Equity: <b className="text-slate-300">${fmt(item.equity)}</b></span>
-        <span>Positions: <b className="text-slate-300">{item.open_positions}</b></span>
-        <span>Trades: <b className="text-slate-300">{item.stats?.count ?? 0}</b></span>
-        <span>WR: <b className="text-slate-300">{item.stats?.win_rate?.toFixed(0) ?? '—'}%</b></span>
-      </div>
-      {/* Equity bar */}
-      <div className="mt-3 h-1 rounded-full bg-slate-800 overflow-hidden">
-        <div className="h-full rounded-full transition-all duration-500"
-          style={{
-            width: `${Math.min(100, Math.max(0, item.equity / 100))}%`,
-            background: item.pnl >= 0 ? '#00c087' : '#f23645',
-          }} />
-      </div>
-    </button>
-  );
-}
-
-function ArenaDetail({ item }) {
-  const [positions, setPositions] = useState([]);
-  const [trades, setTrades]       = useState([]);
-  const strat = item.strategy;
-
+// ── equity area chart (lightweight-charts) ──────────────────────────────────
+function EquityChart({ data }) {
+  const elRef = useRef(null), chartRef = useRef(null), serRef = useRef(null);
   useEffect(() => {
-    const load = async () => {
-      const [pos, tr] = await Promise.all([
-        api(`/api/arena/${strat.id}/positions`),
-        api(`/api/arena/${strat.id}/trades`),
-      ]);
-      if (pos?.positions) setPositions(pos.positions);
-      if (tr?.trades)     setTrades(tr.trades);
-    };
-    load();
-    const id = setInterval(load, 10_000);
-    return () => clearInterval(id);
-  }, [strat.id]);
+    if (!elRef.current || chartRef.current) return;
+    const chart = LightweightCharts.createChart(elRef.current, {
+      layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#5b6b86', fontFamily: 'JetBrains Mono' },
+      grid: { vertLines: { color: '#141c2e' }, horzLines: { color: '#141c2e' } },
+      rightPriceScale: { borderColor: '#1d2740' },
+      timeScale: { borderColor: '#1d2740', timeVisible: true, secondsVisible: false },
+      crosshair: { mode: 0 },
+      height: 260,
+    });
+    const series = chart.addAreaSeries({ lineColor: ACCENT, topColor: 'rgba(108,140,255,0.35)', bottomColor: 'rgba(108,140,255,0.02)', lineWidth: 2 });
+    chartRef.current = chart; serRef.current = series;
+    const ro = new ResizeObserver(() => chart.applyOptions({ width: elRef.current.clientWidth }));
+    ro.observe(elRef.current);
+    return () => { ro.disconnect(); chart.remove(); chartRef.current = null; };
+  }, []);
+  useEffect(() => {
+    if (serRef.current && data && data.length) {
+      serRef.current.setData(data);
+      if (chartRef.current) chartRef.current.timeScale().fitContent();
+    }
+  }, [data]);
+  return <div ref={elRef} style={{ width: '100%', height: 260 }} />;
+}
 
-  const pnlColor = item.pnl >= 0 ? '#00c087' : '#f23645';
-
+// ── candle chart ────────────────────────────────────────────────────────────
+function CandleChart({ symbol }) {
+  const elRef = useRef(null), chartRef = useRef(null), serRef = useRef(null);
+  const [tf, setTf] = useState('4h');
+  useEffect(() => {
+    if (!elRef.current || chartRef.current) return;
+    const chart = LightweightCharts.createChart(elRef.current, {
+      layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#5b6b86', fontFamily: 'JetBrains Mono' },
+      grid: { vertLines: { color: '#141c2e' }, horzLines: { color: '#141c2e' } },
+      rightPriceScale: { borderColor: '#1d2740' },
+      timeScale: { borderColor: '#1d2740', timeVisible: true },
+      height: 300,
+    });
+    serRef.current = chart.addCandlestickSeries({ upColor: G, downColor: R, borderUpColor: G, borderDownColor: R, wickUpColor: G, wickDownColor: R });
+    chartRef.current = chart;
+    const ro = new ResizeObserver(() => chart.applyOptions({ width: elRef.current.clientWidth }));
+    ro.observe(elRef.current);
+    return () => { ro.disconnect(); chart.remove(); chartRef.current = null; };
+  }, []);
+  const load = useCallback(async () => {
+    if (!symbol) return;
+    const d = await api(`/api/candles/${symbol}?tf=${tf}&limit=300`);
+    if (d?.candles && serRef.current) serRef.current.setData(d.candles);
+    if (chartRef.current) chartRef.current.timeScale().fitContent();
+  }, [symbol, tf]);
+  useEffect(() => { load(); const id = setInterval(load, 30000); return () => clearInterval(id); }, [load]);
   return (
-    <div className="space-y-4">
-      {/* Header */}
-      <div className="card p-5">
-        <div className="flex items-start justify-between mb-3">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <h2 className="font-bold text-white">{strat.name}</h2>
-              <StrategyBadge style={strat.style} />
-            </div>
-            <p className="text-xs text-slate-400 max-w-lg">{strat.description}</p>
-          </div>
-          <div className="text-right">
-            <p className="text-2xl font-bold" style={{ color: pnlColor }}>
-              {item.pnl >= 0 ? '+' : ''}${fmt(item.pnl)}
-            </p>
-            <p className="text-xs text-slate-500">vs $10,000 start</p>
-          </div>
-        </div>
-        <div className="grid grid-cols-5 gap-3 mb-4">
-          <div className="card p-3"><p className="text-xs text-slate-500 mb-1">Equity</p><p className="font-bold">${fmt(item.equity)}</p></div>
-          <div className="card p-3"><p className="text-xs text-slate-500 mb-1">Free Balance</p><p className="font-bold">${fmt(item.balance)}</p></div>
-          <div className="card p-3 border border-amber-500/10"><p className="text-xs text-amber-500 font-bold mb-1">💰 Profit Purse</p><p className="font-bold text-amber-400">${fmt(item.profit_purse ?? 0)}</p></div>
-          <div className="card p-3"><p className="text-xs text-slate-500 mb-1">Win Rate</p>
-            <p className="font-bold">{item.stats?.count ? item.stats.win_rate.toFixed(0) + '%' : '—'}</p></div>
-          <div className="card p-3"><p className="text-xs text-slate-500 mb-1">Scans Done</p><p className="font-bold">{item.runs}</p></div>
-        </div>
-        <p className="text-[10px] text-slate-600 uppercase tracking-widest mb-2">Strategy Parameters</p>
-        <StrategyParams strategy={strat} />
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <p className="mono font-bold">{symbol}<span style={{ color: DIM }}>/USDT</span></p>
+        <div className="flex gap-1">{['1h', '4h', '1d', '1w'].map(t =>
+          <button key={t} onClick={() => setTf(t)} className={`px-2.5 py-1 rounded-md text-xs mono ${tf === t ? 'tab-active' : 'tab-idle'}`}>{t}</button>)}</div>
       </div>
-
-      {/* Open Positions */}
-      {positions.length > 0 && (
-        <div className="card p-4">
-          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-3">Open Positions</p>
-          <div className="space-y-2">
-            {positions.map(pos => {
-              const pnl = pos.unrealized_pnl;
-              const color = pnl >= 0 ? G : R;
-              return (
-                <div key={pos.symbol} className="flex items-center justify-between text-xs py-1.5 border-b border-slate-800/50 last:border-0">
-                  <div className="flex items-center gap-3">
-                    <span className="font-bold">{pos.symbol}</span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] font-bold"
-                      style={{ background: pos.side === 'LONG' ? '#00c08722' : '#f2364522',
-                                color: pos.side === 'LONG' ? G : R }}>{pos.side}</span>
-                  </div>
-                  <div className="flex gap-5 text-slate-400">
-                    <span>@ ${fmt(pos.entry, 4)}</span>
-                    <span>→ ${fmt(pos.current_price, 4)}</span>
-                    <span style={{ color }}>{pnl >= 0 ? '+' : ''}${fmt(pnl)}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-      {positions.length === 0 && (
-        <div className="card p-4 text-center text-slate-600 text-xs">No open positions</div>
-      )}
-
-      {/* Recent Trades */}
-      {trades.length > 0 && (
-        <div className="card p-4">
-          <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-3">
-            Trade History ({trades.length})
-          </p>
-          <div className="space-y-1 max-h-48 overflow-y-auto">
-            {[...trades].reverse().map((t, i) => {
-              const color = t.pnl >= 0 ? G : R;
-              return (
-                <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-slate-800/40 last:border-0">
-                  <div className="flex items-center gap-2">
-                    <span>{t.symbol}</span>
-                    <span style={{ color: t.side === 'LONG' ? G : R }}>{t.side}</span>
-                    <span className="text-slate-600">@ ${fmt(t.entry, 4)} → ${fmt(t.exit, 4)}</span>
-                  </div>
-                  <span style={{ color }}>{t.pnl >= 0 ? '+' : ''}${fmt(t.pnl)}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Activity Log */}
-      <div className="card p-4">
-        <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-3">Activity Log</p>
-        <div className="space-y-0.5 max-h-40 overflow-y-auto font-mono">
-          {[...(item.log ?? [])].reverse().map((entry, i) => (
-            <div key={i} className="flex gap-3 text-xs py-0.5">
-              <span className="text-slate-700 shrink-0 w-16">{(entry.time ?? '').slice(11, 19)}</span>
-              <span className={entry.level === 'TRADE' ? 'text-yellow-400' : 'text-slate-500'}>{entry.msg}</span>
-            </div>
-          ))}
-          {(!item.log?.length) && <p className="text-slate-700 text-xs py-2">Waiting for first scan…</p>}
-        </div>
-      </div>
+      <div ref={elRef} style={{ width: '100%', height: 300 }} />
     </div>
   );
 }
 
-function ArenaTab({ arena }) {
-  const [selected, setSelected] = useState(0);
-
-  if (!arena.length) {
-    return (
-      <div className="card p-8 text-center">
-        <p className="text-slate-500 text-sm mb-2">Generating strategies…</p>
-        <p className="text-slate-700 text-xs">Oscar is designing 5 unique trading approaches via Gemini. Refresh in a moment.</p>
-      </div>
-    );
-  }
-
-  const sorted = [...arena].sort((a, b) => b.pnl - a.pnl);
-  const leaderIdx = sorted.map(s => arena.findIndex(a => a.strategy.id === s.strategy.id));
-
+// ── safety panel ────────────────────────────────────────────────────────────
+function Safety({ s }) {
+  if (!s) return null;
+  const dd = s.daily_drawdown_pct || 0, lim = s.max_daily_drawdown_pct || 25;
+  const w = Math.max(0, Math.min(100, (dd / lim) * 100));
   return (
-    <div className="space-y-5">
-      {/* Leaderboard header */}
-      <div className="card p-4">
-        <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-3">🏆 Leaderboard</p>
-        <div className="space-y-2">
-          {sorted.map((item, rank) => {
-            const pnlColor = item.pnl >= 0 ? G : R;
-            const medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
-            return (
-              <button key={item.strategy.id}
-                onClick={() => setSelected(arena.findIndex(a => a.strategy.id === item.strategy.id))}
-                className="w-full flex items-center gap-3 text-xs hover:bg-slate-800/30 rounded px-2 py-1.5 transition-colors">
-                <span className="text-base w-6 shrink-0">{medals[rank]}</span>
-                <span className="font-bold text-slate-200 w-36 text-left truncate">{item.strategy.name}</span>
-                <StrategyBadge style={item.strategy.style} />
-                <div className="flex-1 mx-3 h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                  <div className="h-full rounded-full"
-                    style={{ width: `${Math.min(100, Math.max(2, 50 + item.pnl_pct * 2))}%`, background: pnlColor }} />
-                </div>
-                <span className="font-bold w-24 text-right" style={{ color: pnlColor }}>
-                  {item.pnl >= 0 ? '+' : ''}${fmt(item.pnl)} ({fmtPct(item.pnl_pct)})
-                </span>
-              </button>
-            );
-          })}
-        </div>
+    <div className="grid grid-cols-2 gap-3 text-sm">
+      <div><p className="text-[11px]" style={{ color: DIM }}>MODE</p><p className="mono font-bold" style={{ color: '#ffd166' }}>{(s.mode || 'paper').toUpperCase()}</p></div>
+      <div><p className="text-[11px]" style={{ color: DIM }}>KILL SWITCH</p><p className="mono font-bold" style={{ color: s.kill_switch ? R : G }}>{s.kill_switch ? 'ENGAGED' : 'OFF'}</p></div>
+      <div className="col-span-2">
+        <div className="flex justify-between text-[11px]" style={{ color: DIM }}><span>DAILY DRAWDOWN</span><span className="mono">{fmt(dd, 1)}% / {fmt(lim, 0)}%</span></div>
+        <div className="bar-track h-2 mt-1"><div style={{ width: w + '%', height: '100%', background: s.drawdown_halt ? R : 'linear-gradient(90deg,#ffd166,#ff4d6d)' }} /></div>
+        {s.drawdown_halt && <p className="text-[11px] mt-1" style={{ color: R }}>Breaker tripped — new entries halted today.</p>}
       </div>
-
-      {/* Strategy selector + detail */}
-      <div className="flex gap-4">
-        {/* Left: strategy cards */}
-        <div className="w-72 shrink-0 space-y-2">
-          {arena.map((item, i) => (
-            <ArenaCard key={item.strategy.id} item={item} selected={selected === i} onClick={() => setSelected(i)} />
-          ))}
-        </div>
-        {/* Right: detail panel */}
-        <div className="flex-1 min-w-0">
-          <ArenaDetail item={arena[selected]} />
-        </div>
-      </div>
+      <div><p className="text-[11px]" style={{ color: DIM }}>MAX POSITIONS</p><p className="mono">{s.max_open_positions}</p></div>
+      <div><p className="text-[11px]" style={{ color: DIM }}>MAX / TRADE</p><p className="mono">{s.max_alloc_pct_per_trade}%</p></div>
     </div>
   );
 }
 
-// ── App Root ───────────────────────────────────────────────────────────────────
-function App() {
-  const [tab, setTab] = useState('arena');
-  const [selectedStrategy, setSelectedStrategy] = useState('all');
-  const [portfolio, setPortfolio] = useState(null);
+// ── agent detail ────────────────────────────────────────────────────────────
+function AgentDetail({ a }) {
   const [positions, setPositions] = useState([]);
   const [trades, setTrades] = useState([]);
-  const [prices, setPrices] = useState(null);
-  const [engine, setEngine] = useState(null);
-  const [arena, setArena] = useState([]);
-  const [strategies, setStrategies] = useState([]);
-  const [lastUpdated, setLastUpdated] = useState(null);
-
-  const refresh = useCallback(async () => {
-    const [port, pos, tr, pr, eng, ar, strats] = await Promise.all([
-      api(`/api/portfolio?sid=${selectedStrategy}`),
-      api(`/api/positions?sid=${selectedStrategy}`),
-      api(`/api/trades?sid=${selectedStrategy}`),
-      api('/api/prices'),
-      api('/api/engine'),
-      api('/api/arena'),
-      api('/api/arena/strategies'),
-    ]);
-    if (port) setPortfolio(port);
-    if (pos?.positions) setPositions(pos.positions);
-    if (tr?.trades)     setTrades(tr.trades);
-    if (pr?.prices)     setPrices(pr.prices);
-    if (eng)            setEngine(eng);
-    if (ar?.arena)      setArena(ar.arena);
-    if (strats?.strategies) setStrategies(strats.strategies);
-    setLastUpdated(new Date().toLocaleTimeString());
-  }, [selectedStrategy]);
-
   useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 10_000);
-    return () => clearInterval(id);
-  }, [refresh]);
+    if (!a) return;
+    let alive = true;
+    const load = async () => {
+      const [p, t] = await Promise.all([api(`/api/arena/${a.strategy.id}/positions`), api(`/api/arena/${a.strategy.id}/trades`)]);
+      if (!alive) return;
+      setPositions(p?.positions || []); setTrades((t?.trades || []).slice().reverse());
+    };
+    load(); const id = setInterval(load, 5000); return () => { alive = false; clearInterval(id); };
+  }, [a?.strategy?.id]);
+  if (!a) return null;
+  return (
+    <div className="space-y-4 fadein">
+      <div className="glass p-5">
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <h3 className="text-xl font-extrabold">{a.strategy.name}</h3>
+            <p className="text-sm" style={{ color: DIM }}>{a.persona}</p>
+          </div>
+          <div className="flex gap-5 text-right">
+            <div><p className="text-[11px]" style={{ color: DIM }}>EQUITY</p><p className="mono text-lg font-bold">{usd(a.equity, 0)}</p></div>
+            <div><p className="text-[11px]" style={{ color: DIM }}>PnL</p><p className="mono text-lg font-bold" style={{ color: pnlColor(a.pnl) }}>{sign(a.pnl, 0)} ({pct(a.pnl_pct)})</p></div>
+            <div><p className="text-[11px]" style={{ color: DIM }}>WIN RATE</p><p className="mono text-lg font-bold">{fmt(a.stats?.win_rate || 0, 0)}%</p></div>
+          </div>
+        </div>
+        <div className="mt-4">
+          <p className="text-[11px] uppercase tracking-wider mb-1" style={{ color: ACCENT }}>🧠 Self-authored strategy memo (evolves every cycle)</p>
+          <div className="rounded-xl p-3 text-[13px] leading-relaxed" style={{ background: '#0a0f1c', border: '1px solid #18203a', color: '#c6d2ea', maxHeight: 170, overflowY: 'auto' }}>
+            {a.strategy_memo || 'No memo yet — first cycle pending.'}
+          </div>
+        </div>
+        {a.watchlist?.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1.5 items-center">
+            <span className="text-[11px]" style={{ color: DIM }}>WATCHING:</span>
+            {a.watchlist.slice(0, 20).map(w => <span key={w} className="chip mono" style={{ color: '#c6d2ea' }}>{w}</span>)}
+          </div>
+        )}
+        {a.last_commentary && <p className="text-[12px] mt-3" style={{ color: DIM }}>💬 {a.last_commentary}</p>}
+      </div>
+      <div className="grid lg:grid-cols-2 gap-4">
+        <div className="glass p-5"><p className="font-bold mb-2">Open Positions</p><Positions rows={positions} /></div>
+        <div className="glass p-5"><p className="font-bold mb-2">Activity</p><ActivityLog log={a.log} /></div>
+      </div>
+      <div className="glass p-5"><p className="font-bold mb-2">Closed Trades</p><Trades rows={trades} /></div>
+    </div>
+  );
+}
 
-  const tabs = [
-    { id: 'arena',     label: '🏟️ Arena' },
-    { id: 'charts',    label: '📈 Charts' },
-    { id: 'positions', label: `📋 Positions (${positions.length})` },
-    { id: 'history',   label: `📜 History (${trades.length})` },
-  ];
+// ── main app ────────────────────────────────────────────────────────────────
+function App() {
+  const [engine, setEngine] = useState(null);
+  const [portfolio, setPortfolio] = useState(null);
+  const [arena, setArena] = useState([]);
+  const [universe, setUniverse] = useState([]);
+  const [positions, setPositions] = useState([]);
+  const [trades, setTrades] = useState([]);
+  const [config, setConfig] = useState(null);
+  const [tab, setTab] = useState('arena');
+  const [selected, setSelected] = useState(null);
+  const [chartSym, setChartSym] = useState('BTC');
+  const histRef = useRef({});           // id -> [{time,value}]
+  const [, force] = useState(0);
+
+  const poll = useCallback(async () => {
+    const [eng, pf, ar, uni, pos, tr, cfg] = await Promise.all([
+      api('/api/engine'), api('/api/portfolio'), api('/api/arena'),
+      api('/api/universe'), api('/api/positions'), api('/api/trades'), api('/api/config'),
+    ]);
+    if (eng) setEngine(eng);
+    if (pf) setPortfolio(pf);
+    if (uni) setUniverse(uni.universe || []);
+    if (pos) setPositions(pos.positions || []);
+    if (tr) setTrades(tr.trades || []);
+    if (cfg) setConfig(cfg);
+    if (ar?.arena) {
+      setArena(ar.arena);
+      const t = Math.floor(Date.now() / 1000);
+      const h = histRef.current;
+      const push = (k, v) => {
+        if (!h[k]) h[k] = [];
+        const last = h[k][h[k].length - 1];
+        if (last && last.time === t) last.value = v; else h[k].push({ time: t, value: v });
+        if (h[k].length > 400) h[k].shift();
+      };
+      let totEq = 0;
+      ar.arena.forEach(a => { push(a.strategy.id, a.equity); totEq += a.equity; });
+      push('__total', totEq);
+      force(x => x + 1);
+    }
+  }, []);
+
+  useEffect(() => { poll(); const id = setInterval(poll, 5000); return () => clearInterval(id); }, [poll]);
+
+  const selectedAgent = useMemo(() => arena.find(a => a.strategy.id === selected) || null, [arena, selected]);
+  const best = useMemo(() => arena.slice().sort((a, b) => b.pnl_pct - a.pnl_pct)[0], [arena]);
+  const aggSafety = arena[0]?.safety;
+
+  const TABS = [['arena', '🏟️ Arena'], ['positions', '📊 Positions'], ['history', '📜 History'], ['charts', '📈 Charts'], ['activity', '🛰️ Activity']];
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#0d0f17]">
-      {/* Header */}
-      <header className="flex items-center justify-between px-5 py-2.5 border-b border-slate-800/60 bg-[#101320]">
-        <div className="flex items-center gap-3">
-          <span className="text-base font-bold tracking-tight text-white">OSCAR</span>
-          <span className="text-slate-700">|</span>
-          <span className="text-xs text-slate-500">Arena Dashboard</span>
-        </div>
-        <Ticker prices={prices} />
-        <div className="flex items-center gap-3 text-xs">
-          {lastUpdated && <span className="text-slate-600">Updated {lastUpdated}</span>}
-          <div className="flex items-center gap-1.5">
-            <div className={`w-1.5 h-1.5 rounded-full ${engine?.running ? 'live-dot bg-emerald-400' : 'bg-red-500'}`} />
-            <span className="text-slate-500">{engine?.running ? 'Live' : 'Paused'}</span>
+    <div className="max-w-[1500px] mx-auto p-4 md:p-6 space-y-5">
+      <Header engine={engine} config={config} />
+
+      {/* KPI row */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <Kpi big label="Total Equity" value={usd(portfolio?.equity || 0, 0)} color="#fff"
+             sub={`from ${usd(portfolio?.initial_balance || 0, 0)}`} />
+        <Kpi big label="Total PnL" value={sign(portfolio?.total_pnl || 0, 0)} color={pnlColor(portfolio?.total_pnl || 0)}
+             sub={pct(portfolio?.total_pnl_pct || 0)} />
+        <Kpi label="Win Rate" value={fmt(portfolio?.stats?.win_rate || 0, 0) + '%'} color={ACCENT}
+             sub={`${portfolio?.stats?.count || 0} closed trades`} />
+        <Kpi label="Open Positions" value={positions.length} sub={`${arena.length} agents trading`} />
+        <Kpi label="Profit Purse" value={usd(portfolio?.profit_purse || 0, 0)} color={G} sub="banked gains" />
+        <Kpi label="Top Agent" value={best ? short(best.strategy.name, 14) : '—'} color={G}
+             sub={best ? pct(best.pnl_pct) : ''} />
+      </div>
+
+      {/* equity + universe */}
+      <div className="grid lg:grid-cols-3 gap-4">
+        <div className="glass p-5 lg:col-span-2">
+          <div className="flex items-center justify-between mb-1">
+            <p className="font-bold">Aggregate Equity</p>
+            <p className="mono text-sm" style={{ color: pnlColor(portfolio?.total_pnl || 0) }}>{usd(portfolio?.equity || 0, 0)} · {pct(portfolio?.total_pnl_pct || 0)}</p>
           </div>
+          <EquityChart data={histRef.current['__total'] || []} />
         </div>
-      </header>
+        <div className="glass p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="font-bold">Live Universe</p>
+            <span className="chip mono" style={{ color: ACCENT }}>{engine?.universe_size || universe.length} coins</span>
+          </div>
+          <Heatmap universe={universe} />
+        </div>
+      </div>
 
-      {/* Body */}
-      <div className="flex flex-1 overflow-hidden">
-        <Sidebar
-          portfolio={portfolio}
-          engine={engine}
-          selectedStrategy={selectedStrategy}
-          setSelectedStrategy={setSelectedStrategy}
-          strategies={strategies}
-        />
+      {/* tabs */}
+      <div className="flex gap-2 flex-wrap">
+        {TABS.map(([k, label]) =>
+          <button key={k} onClick={() => setTab(k)} className={`px-4 py-2 rounded-xl text-sm font-medium ${tab === k ? 'tab-active' : 'tab-idle'}`}>{label}</button>)}
+      </div>
 
-        <main className="flex-1 p-5 overflow-y-auto">
-          {/* Tabs */}
-          <div className="flex gap-0 mb-5 border-b border-slate-800/60">
-            {tabs.map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)}
-                className={`px-4 py-2 text-xs font-bold transition-colors border-b-2 -mb-px
-                  ${tab === t.id
-                    ? 'border-blue-500 text-blue-400'
-                    : 'border-transparent text-slate-500 hover:text-slate-300'}`}>
-                {t.label}
-              </button>
+      {tab === 'arena' && (
+        <div className="space-y-4">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {arena.map(a => (
+              <AgentCard key={a.strategy.id} a={a} hist={histRef.current[a.strategy.id]}
+                         selected={selected === a.strategy.id}
+                         onClick={() => setSelected(selected === a.strategy.id ? null : a.strategy.id)} />
             ))}
           </div>
+          {selectedAgent
+            ? <AgentDetail a={selectedAgent} />
+            : <p className="text-center text-sm py-4" style={{ color: DIM }}>Click an agent to see its memo, positions, trades and activity.</p>}
+        </div>
+      )}
 
-          {tab === 'charts'    && <ChartsTab prices={prices} />}
-          {tab === 'positions' && <PositionsTab positions={positions} />}
-          {tab === 'history'   && <HistoryTab trades={trades} />}
-          {tab === 'arena'     && <ArenaTab arena={arena} />}
-        </main>
-      </div>
+      {tab === 'positions' && <div className="glass p-5"><p className="font-bold mb-3">All Open Positions ({positions.length})</p><Positions rows={positions} /></div>}
+      {tab === 'history' && <div className="glass p-5"><p className="font-bold mb-3">All Closed Trades</p><Trades rows={trades} /></div>}
+      {tab === 'charts' && (
+        <div className="grid lg:grid-cols-3 gap-4">
+          <div className="glass p-5 lg:col-span-2"><CandleChart symbol={chartSym} /></div>
+          <div className="glass p-5">
+            <p className="font-bold mb-3">Pick a coin</p>
+            <div className="grid grid-cols-3 gap-1.5 max-h-[320px] overflow-y-auto">
+              {universe.slice(0, 36).map(u =>
+                <button key={u.symbol} onClick={() => setChartSym(u.base)}
+                  className={`px-2 py-1.5 rounded-lg text-xs mono ${chartSym === u.base ? 'tab-active' : 'tab-idle'}`}>{u.base}</button>)}
+            </div>
+          </div>
+        </div>
+      )}
+      {tab === 'activity' && (
+        <div className="grid lg:grid-cols-3 gap-4">
+          <div className="glass p-5 lg:col-span-2"><p className="font-bold mb-3">Global Activity Feed</p><ActivityLog log={engine?.log} /></div>
+          <div className="glass p-5"><p className="font-bold mb-3">🛡️ Safety</p><Safety s={aggSafety} /></div>
+        </div>
+      )}
+
+      <p className="text-center text-[11px] py-3" style={{ color: '#2c3650' }}>
+        Autonomous Arena · {engine?.gemini_keys || 0} Gemini key(s) · {engine?.exchange || '—'} · paper mode · the AI decides everything, code only enforces safety
+      </p>
     </div>
   );
 }

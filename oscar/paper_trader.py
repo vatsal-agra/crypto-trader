@@ -58,10 +58,10 @@ class Position:
 
 
 class PaperTrader:
-    def __init__(self, state_file: Path = STATE_FILE) -> None:
+    def __init__(self, state_file: Path = STATE_FILE, starting_balance: float = DEFAULT_BALANCE) -> None:
         self._state_file = state_file
-        self.balance: float = DEFAULT_BALANCE
-        self.initial_balance: float = DEFAULT_BALANCE
+        self.balance: float = starting_balance
+        self.initial_balance: float = starting_balance
         self.profit_purse: float = 0.0
         self.positions: dict[str, Position] = {}
         self.closed_trades: list[dict] = []

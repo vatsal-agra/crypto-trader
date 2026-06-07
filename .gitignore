@@ -22,3 +22,8 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime state (regenerated at runtime)
+data/agent_*.json
+data/*_account.json
+STOP

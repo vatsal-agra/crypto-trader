@@ -176,7 +176,7 @@ async def oscar_portfolio_decision(
         return {}
 
     api_key = os.getenv("GEMINI_API_KEY")
-    model_id = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    model_id = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     if not api_key:
         logger.warning("GEMINI_API_KEY not set")
         return {}
