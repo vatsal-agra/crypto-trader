@@ -1,0 +1,24 @@
+# Environment variables — NEVER commit real keys
+.env
+.env.local
+.env.*.local
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

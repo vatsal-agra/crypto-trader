@@ -1,0 +1,28 @@
+{
+  "balance": 3600.000000000002,
+  "initial_balance": 10000.0,
+  "profit_purse": 0.0,
+  "positions": {
+    "BTC": {
+      "symbol": "BTC",
+      "side": "SHORT",
+      "entry": 61793.99,
+      "size": 0.06473121415205584,
+      "stop": 64883.6895,
+      "target": 57159.440749999994,
+      "risk_usd": 200.0,
+      "opened_at": "2026-06-05T21:52:11.505454+00:00"
+    },
+    "SUI": {
+      "symbol": "SUI",
+      "side": "SHORT",
+      "entry": 0.7104,
+      "size": 3378.3783783783806,
+      "stop": 0.74592,
+      "target": 0.65712,
+      "risk_usd": 120.00000000000007,
+      "opened_at": "2026-06-06T17:32:41.496551+00:00"
+    }
+  },
+  "closed_trades": []
+}

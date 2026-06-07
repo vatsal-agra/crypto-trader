@@ -1,0 +1,72 @@
+[
+  {
+    "id": "s1",
+    "name": "Trend Rider",
+    "description": "All three filters must align: EMA side, RSI 45\u201370, and bullish/bearish 4H structure. Low frequency, high conviction.",
+    "style": "trend_follow",
+    "long_rsi_min": 45,
+    "long_rsi_max": 70,
+    "short_rsi_min": 30,
+    "short_rsi_max": 55,
+    "require_ema_filter": true,
+    "require_structure": true,
+    "risk_pct": 0.01,
+    "rr_ratio": 3.0
+  },
+  {
+    "id": "s2",
+    "name": "Reversal Hunter",
+    "description": "Fades RSI extremes \u2014 buys oversold (<35) and shorts overbought (>65). Counter-trend, no EMA or structure filter.",
+    "style": "reversal",
+    "long_rsi_min": 20,
+    "long_rsi_max": 35,
+    "short_rsi_min": 65,
+    "short_rsi_max": 85,
+    "require_ema_filter": false,
+    "require_structure": false,
+    "risk_pct": 0.015,
+    "rr_ratio": 2.0
+  },
+  {
+    "id": "s3",
+    "name": "Momentum Surfer",
+    "description": "Rides mid-RSI momentum continuation (50\u201375 long, 25\u201350 short) with EMA filter but no structure requirement.",
+    "style": "momentum",
+    "long_rsi_min": 50,
+    "long_rsi_max": 75,
+    "short_rsi_min": 25,
+    "short_rsi_max": 50,
+    "require_ema_filter": true,
+    "require_structure": false,
+    "risk_pct": 0.008,
+    "rr_ratio": 2.5
+  },
+  {
+    "id": "s4",
+    "name": "Swing Sniper",
+    "description": "High conviction with all filters on, doubles the risk to 2% but accepts quick 1.5:1 exits. Fewer trades, bigger bets.",
+    "style": "aggressive",
+    "long_rsi_min": 42,
+    "long_rsi_max": 68,
+    "short_rsi_min": 32,
+    "short_rsi_max": 58,
+    "require_ema_filter": true,
+    "require_structure": true,
+    "risk_pct": 0.02,
+    "rr_ratio": 1.5
+  },
+  {
+    "id": "s5",
+    "name": "Structure Pure",
+    "description": "EMA side + 4H structure only \u2014 ignores RSI range entirely. Widest entry window, catches more moves at the cost of some noise.",
+    "style": "breakout",
+    "long_rsi_min": 25,
+    "long_rsi_max": 80,
+    "short_rsi_min": 20,
+    "short_rsi_max": 75,
+    "require_ema_filter": true,
+    "require_structure": true,
+    "risk_pct": 0.012,
+    "rr_ratio": 2.0
+  }
+]
