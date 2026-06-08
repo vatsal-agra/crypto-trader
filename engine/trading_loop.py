@@ -95,6 +95,10 @@ class AutonomousArena:
     async def _cycle(self) -> None:
         self.runs += 1
         self.last_run = datetime.now(timezone.utc).isoformat()
+        logger.info(
+            "Cycle #%d starting — discovering universe (top %d by 24h volume)...",
+            self.runs, self._settings.universe_size,
+        )
         try:
             universe = await self._market.discover_universe(self._settings.universe_size)
         except Exception as exc:

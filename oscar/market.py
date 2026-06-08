@@ -30,7 +30,17 @@ TIMEFRAME_MAP: dict[str, str] = {
 }
 
 # Tried in order when EXCHANGE_ID=auto. First one whose markets load wins.
-_AUTO_EXCHANGES = ["binance", "binanceus", "kucoin", "gateio", "okx", "kraken", "coinbase"]
+# binance.com is intentionally NOT in this list: it is geo-blocked in many
+# regions and, worse, in some networks the connection silently stalls instead
+# of failing fast, which would hang startup. Pin EXCHANGE_ID=binance explicitly
+# if you really want it. The defaults below are globally reachable and have the
+# deepest USDT spot universes (kucoin ~885, gateio ~2000, okx ~300).
+_AUTO_EXCHANGES = ["kucoin", "okx", "gateio", "binanceus", "kraken", "coinbase"]
+
+# Hard cap on how long a single exchange's market load may take before we give
+# up and try the next one. This guards against a stalled connection that never
+# raises (the per-request ccxt timeout is not always enough on its own).
+_EXCHANGE_LOAD_TIMEOUT = float(os.getenv("EXCHANGE_LOAD_TIMEOUT", "15"))
 
 _SNAPSHOT_CONCURRENCY = 8
 
@@ -174,8 +184,19 @@ class MarketDataService:
             candidates = (
                 _AUTO_EXCHANGES if self._exchange_id == "auto" else [self._exchange_id]
             )
+            logger.info("Selecting exchange (candidates: %s)...", ", ".join(candidates))
             for name in candidates:
-                ex = await self._build(name)
+                logger.info("Connecting to exchange '%s' (loading markets)...", name)
+                try:
+                    ex = await asyncio.wait_for(
+                        self._build(name), timeout=_EXCHANGE_LOAD_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Exchange %s stalled (>%.0fs) — skipping to next",
+                        name, _EXCHANGE_LOAD_TIMEOUT,
+                    )
+                    ex = None
                 if ex is not None:
                     self._ex = ex
                     self.active_exchange = name
